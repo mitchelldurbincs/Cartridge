@@ -1,0 +1,26 @@
+[package]
+name = "engine-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Crypto and randomness
+rand_chacha = { workspace = true }
+rand = "0.8"
+
+# Error handling 
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Concurrency
+once_cell = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Protobuf (will be used by generated code)
+prost = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }

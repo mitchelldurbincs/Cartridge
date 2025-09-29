@@ -1,0 +1,35 @@
+[package]
+name = "engine-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "engine-server"
+path = "src/main.rs"
+
+[dependencies]
+# Core dependencies
+engine-core = { path = "../engine-core" }
+engine-proto = { path = "../engine-proto" }
+games-tictactoe = { path = "../games-tictactoe" }
+
+# Async runtime and networking
+tokio = { workspace = true }
+tonic = { workspace = true }
+async-stream = { workspace = true }
+tokio-stream = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+prometheus = { workspace = true }
+
+# Serialization
+prost = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
