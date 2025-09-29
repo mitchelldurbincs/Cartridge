@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -13,13 +14,13 @@ import (
 
 // MemoryBackend implements an in-memory replay buffer
 type MemoryBackend struct {
-	mu           sync.RWMutex
-	transitions  map[string]*Transition // ID -> Transition
-	episodes     map[string][]string    // EpisodeID -> TransitionIDs
-	envIndex     map[string][]string    // EnvID -> TransitionIDs
-	timeIndex    []string               // TransitionIDs sorted by timestamp
-	maxSize      uint64                 // Maximum number of transitions to store
-	rng          *rand.Rand
+	mu          sync.RWMutex
+	transitions map[string]*Transition // ID -> Transition
+	episodes    map[string][]string    // EpisodeID -> TransitionIDs
+	envIndex    map[string][]string    // EnvID -> TransitionIDs
+	timeIndex   []string               // TransitionIDs sorted by timestamp
+	maxSize     uint64                 // Maximum number of transitions to store
+	rng         *rand.Rand
 }
 
 // NewMemoryBackend creates a new in-memory storage backend
@@ -364,52 +365,83 @@ func (m *MemoryBackend) uniformSample(candidates []*Transition, sampleSize int) 
 }
 
 func (m *MemoryBackend) prioritizedSample(candidates []*Transition, sampleSize int, alpha float32) ([]*Transition, []float32) {
-	if sampleSize >= len(candidates) {
-		sampled := make([]*Transition, len(candidates))
-		weights := make([]float32, len(candidates))
+	numCandidates := len(candidates)
+	if sampleSize >= numCandidates {
+		sampled := make([]*Transition, numCandidates)
 		copy(sampled, candidates)
-		for i := range weights {
-			weights[i] = 1.0
+
+		weights := make([]float32, numCandidates)
+		probabilities := computePrioritizedProbabilities(candidates, alpha)
+		for i, p := range probabilities {
+			weights[i] = importanceWeight(p, numCandidates)
 		}
+
 		return sampled, weights
 	}
 
-	// Calculate priority weights
-	totalWeight := float64(0)
-	priorities := make([]float64, len(candidates))
-
-	for i, candidate := range candidates {
-		// Priority^alpha
-		priority := float64(candidate.Priority)
-		if alpha != 1.0 {
-			priority = pow(priority, float64(alpha))
-		}
-		priorities[i] = priority
-		totalWeight += priority
+	priorities := computeScaledPriorities(candidates, alpha)
+	totalWeight := sumFloat64(priorities)
+	if totalWeight == 0 {
+		return m.uniformSample(candidates, sampleSize), makeUniformWeights(sampleSize)
 	}
 
-	// Sample using weighted random selection
+	probabilities := normalizeProbabilities(priorities, totalWeight)
+	currentPriorities := append([]float64(nil), priorities...)
 	sampled := make([]*Transition, 0, sampleSize)
 	weights := make([]float32, 0, sampleSize)
-	used := make(map[int]bool)
 
-	for len(sampled) < sampleSize {
-		// Random selection based on priority weights
-		target := m.rng.Float64() * totalWeight
-		sum := float64(0)
+	remainingWeight := totalWeight
+	for len(sampled) < sampleSize && remainingWeight > 0 {
+		target := m.rng.Float64() * remainingWeight
+		cumulative := 0.0
 
-		for i, priority := range priorities {
-			if used[i] {
+		for i, priority := range currentPriorities {
+			if priority == 0 {
 				continue
 			}
-			sum += priority
-			if sum >= target {
+
+			cumulative += priority
+			if cumulative >= target {
 				sampled = append(sampled, candidates[i])
-				weights = append(weights, 1.0) // For simplicity, using uniform weights
-				used[i] = true
-				totalWeight -= priority
+				weights = append(weights, importanceWeight(probabilities[i], numCandidates))
+
+				remainingWeight -= priority
+				currentPriorities[i] = 0
 				break
 			}
+		}
+
+		if cumulative < target {
+			// Numerical issues may leave a small remainder; fallback to selecting the first remaining item
+			for i, priority := range currentPriorities {
+				if priority == 0 {
+					continue
+				}
+				sampled = append(sampled, candidates[i])
+				weights = append(weights, importanceWeight(probabilities[i], numCandidates))
+				remainingWeight -= priority
+				currentPriorities[i] = 0
+				break
+			}
+		}
+	}
+
+	if len(sampled) < sampleSize {
+		// Fill any remaining slots uniformly
+		remaining := m.uniformSample(candidates, sampleSize)
+		used := make(map[*Transition]struct{}, len(sampled))
+		for _, s := range sampled {
+			used[s] = struct{}{}
+		}
+		for _, candidate := range remaining {
+			if len(sampled) >= sampleSize {
+				break
+			}
+			if _, exists := used[candidate]; exists {
+				continue
+			}
+			sampled = append(sampled, candidate)
+			weights = append(weights, 1.0)
 		}
 	}
 
@@ -436,17 +468,65 @@ func removeString(slice []string, item string) []string {
 	return slice
 }
 
-func pow(x, y float64) float64 {
-	if y == 0 {
-		return 1
-	}
-	if y == 1 {
-		return x
-	}
+func computeScaledPriorities(candidates []*Transition, alpha float32) []float64 {
+	const epsilon = 1e-12
 
-	result := x
-	for i := 1; i < int(y); i++ {
-		result *= x
+	priorities := make([]float64, len(candidates))
+	for i, candidate := range candidates {
+		priority := math.Max(float64(candidate.Priority), epsilon)
+		priorities[i] = math.Pow(priority, float64(alpha))
 	}
-	return result
+	return priorities
+}
+
+func computePrioritizedProbabilities(candidates []*Transition, alpha float32) []float64 {
+	if len(candidates) == 0 {
+		return nil
+	}
+	priorities := computeScaledPriorities(candidates, alpha)
+	total := sumFloat64(priorities)
+	if total == 0 {
+		uniform := float64(1) / float64(len(candidates))
+		probabilities := make([]float64, len(candidates))
+		for i := range probabilities {
+			probabilities[i] = uniform
+		}
+		return probabilities
+	}
+	return normalizeProbabilities(priorities, total)
+}
+
+func importanceWeight(probability float64, total int) float32 {
+	if probability <= 0 {
+		return 0
+	}
+	weight := 1.0 / (float64(total) * probability)
+	return float32(weight)
+}
+
+func normalizeProbabilities(priorities []float64, total float64) []float64 {
+	probabilities := make([]float64, len(priorities))
+	if total == 0 {
+		return probabilities
+	}
+	for i, priority := range priorities {
+		probabilities[i] = priority / total
+	}
+	return probabilities
+}
+
+func sumFloat64(values []float64) float64 {
+	total := 0.0
+	for _, v := range values {
+		total += v
+	}
+	return total
+}
+
+func makeUniformWeights(count int) []float32 {
+	weights := make([]float32, count)
+	for i := range weights {
+		weights[i] = 1.0
+	}
+	return weights
 }
