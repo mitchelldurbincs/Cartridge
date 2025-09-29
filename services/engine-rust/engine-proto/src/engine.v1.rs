@@ -141,6 +141,9 @@ pub struct StepResponse {
     /// Whether episode has terminated
     #[prost(bool, tag = "4")]
     pub done: bool,
+    /// Additional packed info bits (game-specific semantics)
+    #[prost(uint64, tag = "5")]
+    pub info: u64,
 }
 /// Single trajectory configuration for batch simulation
 #[allow(clippy::derive_partial_eq_without_eq)]
