@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -64,6 +65,7 @@ func TestMemoryBackend_Sample(t *testing.T) {
 	backend := NewMemoryBackend(1000)
 	defer backend.Close()
 
+	backend.rng = rand.New(rand.NewSource(42))
 	ctx := context.Background()
 
 	// Store test data
@@ -106,6 +108,88 @@ func TestMemoryBackend_Sample(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, sampled, 2)
 	assert.Len(t, weights, 2)
+}
+
+func TestMemoryBackend_PrioritizedSampleWeightsNonIntegerAlpha(t *testing.T) {
+	backend := NewMemoryBackend(1000)
+	defer backend.Close()
+
+	backend.rng = rand.New(rand.NewSource(1))
+	ctx := context.Background()
+
+	transitions := []*Transition{
+		{ID: "low", Priority: 0.2},
+		{ID: "medium", Priority: 0.8},
+		{ID: "high", Priority: 1.7},
+	}
+
+	_, err := backend.StoreBatch(ctx, transitions)
+	require.NoError(t, err)
+
+	config := &SampleConfig{
+		BatchSize:     uint32(len(transitions)),
+		Prioritized:   true,
+		PriorityAlpha: 0.6,
+	}
+
+	sampled, weights, err := backend.Sample(ctx, config)
+	require.NoError(t, err)
+	require.Len(t, sampled, len(transitions))
+	require.Len(t, weights, len(transitions))
+
+	probabilities := computePrioritizedProbabilities(transitions, config.PriorityAlpha)
+	expectedWeights := make(map[string]float32, len(transitions))
+	for i, transition := range transitions {
+		expectedWeights[transition.ID] = importanceWeight(probabilities[i], len(transitions))
+	}
+
+	for i, transition := range sampled {
+		expected, ok := expectedWeights[transition.ID]
+		require.True(t, ok)
+		assert.InDelta(t, expected, weights[i], 1e-6)
+	}
+}
+
+func TestMemoryBackend_PrioritizedSampleDistribution(t *testing.T) {
+	backend := NewMemoryBackend(1000)
+	defer backend.Close()
+
+	backend.rng = rand.New(rand.NewSource(123))
+	ctx := context.Background()
+
+	transitions := []*Transition{
+		{ID: "low", Priority: 0.1},
+		{ID: "medium", Priority: 1.0},
+		{ID: "high", Priority: 2.4},
+	}
+
+	_, err := backend.StoreBatch(ctx, transitions)
+	require.NoError(t, err)
+
+	config := &SampleConfig{
+		BatchSize:     1,
+		Prioritized:   true,
+		PriorityAlpha: 0.6,
+	}
+
+	iterations := 2000
+	counts := map[string]int{}
+
+	for i := 0; i < iterations; i++ {
+		sampled, _, err := backend.Sample(ctx, config)
+		require.NoError(t, err)
+		require.Len(t, sampled, 1)
+		counts[sampled[0].ID]++
+	}
+
+	probabilities := computePrioritizedProbabilities(transitions, config.PriorityAlpha)
+	tolerance := float64(iterations) * 0.05
+
+	for i, transition := range transitions {
+		expected := float64(iterations) * probabilities[i]
+		actual := float64(counts[transition.ID])
+		assert.InDeltaf(t, expected, actual, tolerance, "unexpected sampling frequency for %s", transition.ID)
+	}
 }
 
 func TestMemoryBackend_UpdatePriorities(t *testing.T) {
