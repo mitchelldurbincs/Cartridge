@@ -1,0 +1,254 @@
+# Cartridge - Reinforcement Learning Platform
+# Multi-language gitignore for Rust, Go, Python services
+
+# ==============================================================================
+# Rust (Engine, Games)
+# ==============================================================================
+
+# Build artifacts
+**/target/
+**/*.rs.bk
+**/Cargo.lock
+
+# Generated files
+**/*.pdb
+
+# ==============================================================================
+# Go (Orchestrator, Replay, Weights, Web)
+# ==============================================================================
+
+# Build artifacts
+**/bin/
+**/pkg/
+**/vendor/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Test coverage
+*.out
+*.prof
+
+# ==============================================================================
+# Python (Learner)
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Poetry
+poetry.lock
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# ==============================================================================
+# Infrastructure & Deployment
+# ==============================================================================
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes secrets
+**/secrets/
+**/secret.yaml
+**/secret.yml
+
+# Docker
+.dockerignore
+
+# ==============================================================================
+# Development Tools
+# ==============================================================================
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ==============================================================================
+# Logs & Runtime Data
+# ==============================================================================
+
+# Log files
+*.log
+logs/
+**/*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# ==============================================================================
+# Environment & Secrets
+# ==============================================================================
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+*.p12
+credentials.json
+service-account*.json
+
+# ==============================================================================
+# Generated Code & Protobuf
+# ==============================================================================
+
+# Generated protobuf code (if not committed)
+**/*.pb.go
+**/*.pb.rs
+**/*_pb2.py
+**/*_pb2_grpc.py
+
+# ==============================================================================
+# Temporary & Cache Files
+# ==============================================================================
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Cache directories
+.cache/
+*.cache
+
+# ==============================================================================
+# Data & Artifacts
+# ==============================================================================
+
+# ML model artifacts
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.h5
+*.hdf5
+checkpoints/
+models/
+weights/
+
+# Data files
+*.parquet
+*.arrow
+*.feather
+data/
+datasets/
+
+# Replay buffers and experiences
+experiences/
+replays/
+
+# ==============================================================================
+# Observability & Monitoring
+# ==============================================================================
+
+# Grafana
+**/grafana/data/
+**/grafana.db
+
+# Prometheus
+**/prometheus/data/
+
+# ==============================================================================
+# Local Development Overrides
+# ==============================================================================
+
+# Docker Compose overrides
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Local configuration overrides
+local.yaml
+local.yml
+*local.toml
+*local.json
+
+# ==============================================================================
+# Generated Documentation
+# ==============================================================================
+
+# Generated docs (if using doc generators)
+docs/_build/
+docs/site/
