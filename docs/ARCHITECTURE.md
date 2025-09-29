@@ -30,21 +30,10 @@ message ResetResponse { bytes state = 1; bytes obs = 2; }
 message StepRequest   { EngineId id = 1; bytes state = 2; bytes action = 3; }
 message StepResponse  { bytes next_state = 1; bytes obs = 2; float reward = 3; bool done = 4; uint64 info = 5; }
 
-message BatchSimulateRequest {
-  EngineId id = 1; repeated bytes states = 2; repeated uint64 seeds = 3;
-  uint32 horizon = 4; uint32 max_chunk = 5;
-}
-message SimResultChunk {
-  repeated bytes next_states = 1; repeated bytes obss = 2;
-  repeated float rewards = 3; repeated bool dones = 4;
-  uint32 idx_start = 5; uint32 idx_end = 6; uint64 step_time_ns = 7;
-}
-
 service Engine {
   rpc GetCapabilities(EngineId) returns (Capabilities);
   rpc Reset(ResetRequest) returns (ResetResponse);
   rpc Step(StepRequest) returns (StepResponse);
-  rpc BatchSimulate(BatchSimulateRequest) returns (stream SimResultChunk);
 }
 ```
 
@@ -121,16 +110,16 @@ Each game crate exposes `pub fn register()`, called from `engine-server`’s `ma
 
 ---
 
-## 5) Server glue (tonic), batching & streaming
+## 5) Server glue (tonic) & buffer management
 
 The server owns:
 
-- **Buffer pools** (`Vec<u8>` or `bytes::BytesMut`) to minimize allocations,
-    
-- **Batch runners** that decode → step → encode in tight loops,
-    
-- **Server-streaming** to return partial chunks (`max_chunk`) quickly and reduce tail latency.
-    
+- **Buffer pools** (`Vec<u8>` or `bytes::BytesMut`) to minimize allocations for state/observation encoding
+
+- **Registry management** for game lookup and instantiation
+
+- **Error handling** with proper gRPC status codes
+
 
 ```rust
 #[tonic::async_trait]
@@ -140,7 +129,7 @@ impl engine::engine_server::Engine for EngineSvc {
     let g = registry::create(&id.env_id).ok_or_else(|| Status::not_found("env"))?;
     Ok(Response::new(g.capabilities()))
   }
-  // reset/step similar; batch_simulate streams SimResultChunk with reused buffers
+  // reset/step handle individual game simulation with buffer reuse
 }
 ```
 

@@ -1,6 +1,6 @@
 ## 1) Mental model: Console & Cartridges
 
-- **Console (`engine-rust` server):** Owns networking (gRPC/tonic), batching, streaming backpressure, metrics/tracing, buffer reuse, and registry lookups. It is game-agnostic.
+- **Console (`engine-rust` server):** Owns networking (gRPC/tonic), metrics/tracing, buffer reuse, and registry lookups. It is game-agnostic and handles individual simulation requests.
     
 - **Cartridge (a game crate):** Implements a small `Game` trait; encodes/decodes its own `State/Action/Obs`; enforces determinism; exposes capabilities.
 
