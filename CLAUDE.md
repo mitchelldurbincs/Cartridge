@@ -10,6 +10,7 @@ Cartridge is a reinforcement learning platform for training AI agents to play ga
 
 The system consists of these main services:
 
+- **Actor (Rust)** - Game actor service that plays games using trained models, generates experience data, and sends it to replay buffer
 - **Engine (Rust)** - Game simulation service that provides a pluggable framework for different games using a generic protobuf contract. Games implement the `Game` trait with typed state/action/observation, which gets converted to an erased interface for gRPC communication.
 - **Learner (Python)** - PyTorch-based reinforcement learning training service that implements RL algorithms and periodically saves model checkpoints
 - **Replay (Go)** - Experience buffer service that stores and samples game transitions for training
@@ -26,10 +27,11 @@ The system consists of these main services:
 - Deterministic simulation using ChaCha20Rng seeding
 
 ### Data Flow
+- Actor (Rust) → Engine (Rust): Game step requests via gRPC
 - Actor (Rust) → Replay (Go): Experience transitions via gRPC streaming
 - Learner ↔ Replay: Sample batches for SGD via gRPC
 - Learner → Object Store: Model checkpoints as safetensors + manifest
-- Weights Publisher → Actors: Model distribution via gRPC
+- Weights (Go) → Actor (Rust): Model distribution via gRPC
 - All services → Observability: Metrics/logs/traces to Prometheus/Loki/Tempo
 
 ## Development Commands
@@ -57,7 +59,7 @@ docker-compose -f deployments/local/docker-compose.yml up
 
 ## Project Structure
 
-- `services/` - Individual microservices (engine-rust, learner-py, orchestrator-go, etc.)
+- `services/` - Individual microservices (actor-rust, engine-rust, learner-py, orchestrator-go, replay-go, web-go, weights-go)
 - `games/` - Game implementations (e.g., tictactoe)
 - `proto/` - Protobuf definitions for service communication
 - `deployments/` - Docker Compose (local) and Kubernetes (k8s) configurations

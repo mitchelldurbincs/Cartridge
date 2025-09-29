@@ -279,6 +279,7 @@ So we have an actor, learner, replay, and model registry system
 Actor (Rust)
 Learner (Python)
 Replay (Go)
-Model Registry System (?)
+Weights (Go)
+Web (Go)
 Orchestrator (Go)
 

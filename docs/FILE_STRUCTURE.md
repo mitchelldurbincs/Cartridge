@@ -28,7 +28,7 @@ cartridge/
 │  │  │  ├─ orchestrator.yaml
 │  │  │  ├─ replay.yaml
 │  │  │  ├─ learner-job.yaml          # Indexed Job (Kueue)
-│  │  │  ├─ actors-deploy.yaml
+│  │  │  ├─ actor-rust-deploy.yaml
 │  │  │  ├─ weights.yaml
 │  │  │  ├─ web.yaml
 │  │  │  ├─ rbac-secrets-netpol.yaml  # RBAC, NetworkPolicy, PodSecurity
