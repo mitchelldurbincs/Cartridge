@@ -1,7 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate protobuf code for engine and replay services
     tonic_build::configure()
-        .build_server(false) // We only need clients
+        .build_server(true)
         .compile(
             &[
                 "../../proto/engine/v1/engine.proto",

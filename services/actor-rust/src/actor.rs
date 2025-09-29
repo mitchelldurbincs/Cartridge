@@ -262,9 +262,7 @@ impl Actor {
             if buffer.is_empty() {
                 return Ok(());
             }
-            let transitions = buffer.clone();
-            buffer.clear();
-            transitions
+            std::mem::take(&mut *buffer)
         };
 
         debug!("Flushing {} transitions to replay service", transitions.len());
@@ -278,5 +276,185 @@ impl Actor {
             .map_err(|e| anyhow!("Failed to store batch: {}", e))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::engine::v1::engine_client::EngineClient;
+    use crate::proto::replay::v1::replay_client::ReplayClient;
+    use crate::proto::replay::v1::replay_server::{Replay, ReplayServer};
+    use crate::proto::replay::v1::{
+        ClearRequest, ClearResponse, GetStatsRequest, SampleRequest, SampleResponse,
+        StatsResponse, StoreBatchRequest, StoreBatchResponse, StoreTransitionRequest,
+        StoreTransitionResponse, Transition, UpdatePrioritiesRequest,
+        UpdatePrioritiesResponse,
+    };
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
+    use tonic::transport::{Endpoint, Server};
+    use tonic::{Response, Status};
+
+    #[derive(Clone, Default)]
+    struct MockReplay {
+        stored: Arc<Mutex<Vec<Transition>>>,
+    }
+
+    #[tonic::async_trait]
+    impl Replay for MockReplay {
+        async fn store_transition(
+            &self,
+            _request: tonic::Request<StoreTransitionRequest>,
+        ) -> Result<Response<StoreTransitionResponse>, Status> {
+            Err(Status::unimplemented("store_transition not implemented in tests"))
+        }
+
+        async fn store_batch(
+            &self,
+            request: tonic::Request<StoreBatchRequest>,
+        ) -> Result<Response<StoreBatchResponse>, Status> {
+            let mut stored = self.stored.lock().unwrap();
+            let transitions = request.into_inner().transitions;
+            let count = transitions.len();
+            stored.extend(transitions);
+            Ok(Response::new(StoreBatchResponse {
+                stored_count: count as u32,
+                ..Default::default()
+            }))
+        }
+
+        async fn sample(
+            &self,
+            _request: tonic::Request<SampleRequest>,
+        ) -> Result<Response<SampleResponse>, Status> {
+            Err(Status::unimplemented("sample not implemented in tests"))
+        }
+
+        async fn get_stats(
+            &self,
+            _request: tonic::Request<GetStatsRequest>,
+        ) -> Result<Response<StatsResponse>, Status> {
+            Err(Status::unimplemented("get_stats not implemented in tests"))
+        }
+
+        async fn update_priorities(
+            &self,
+            _request: tonic::Request<UpdatePrioritiesRequest>,
+        ) -> Result<Response<UpdatePrioritiesResponse>, Status> {
+            Err(Status::unimplemented(
+                "update_priorities not implemented in tests",
+            ))
+        }
+
+        async fn clear(
+            &self,
+            _request: tonic::Request<ClearRequest>,
+        ) -> Result<Response<ClearResponse>, Status> {
+            Err(Status::unimplemented("clear not implemented in tests"))
+        }
+    }
+
+    struct TestPolicy;
+
+    impl Policy for TestPolicy {
+        fn select_action(&mut self, _observation: &[u8]) -> Result<Vec<u8>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_clears_queue_and_delivers_transitions() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ReplayServer::new(replay_service))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let endpoint = Endpoint::new(format!("http://{}", addr)).unwrap();
+        let replay_client = ReplayClient::new(endpoint.connect_lazy());
+
+        let engine_client = {
+            let engine_endpoint = Endpoint::new("http://127.0.0.1:50051".to_string()).unwrap();
+            EngineClient::new(engine_endpoint.connect_lazy())
+        };
+
+        let actor = Actor {
+            config: Config {
+                engine_addr: format!("http://{}", addr),
+                replay_addr: format!("http://{}", addr),
+                actor_id: "test-actor".into(),
+                env_id: "test-env".into(),
+                max_episodes: 1,
+                episode_timeout_secs: 1,
+                batch_size: 2,
+                flush_interval_secs: 1,
+                log_level: "info".into(),
+            },
+            engine_client,
+            replay_client,
+            policy: Arc::new(Mutex::new(Box::new(TestPolicy))),
+            episode_count: Arc::new(Mutex::new(0)),
+            transition_buffer: Arc::new(Mutex::new(Vec::new())),
+            shutdown_signal: Arc::new(Mutex::new(false)),
+        };
+
+        let first_transition = Transition {
+            id: "t1".into(),
+            env_id: "env".into(),
+            episode_id: "ep".into(),
+            step_number: 0,
+            state: b"state1".to_vec(),
+            action: b"action1".to_vec(),
+            next_state: b"state2".to_vec(),
+            observation: b"obs1".to_vec(),
+            next_observation: b"obs2".to_vec(),
+            reward: 1.0,
+            done: false,
+            priority: 1.0,
+            timestamp: 1,
+            metadata: HashMap::new(),
+        };
+        let mut second_transition = first_transition.clone();
+        second_transition.id = "t2".into();
+        second_transition.step_number = 1;
+
+        {
+            let mut buffer = actor.transition_buffer.lock().unwrap();
+            buffer.push(first_transition.clone());
+            buffer.push(second_transition.clone());
+        }
+
+        actor.flush_buffer().await.expect("flush should succeed");
+
+        assert!(
+            actor.transition_buffer.lock().unwrap().is_empty(),
+            "buffer should be empty after flush"
+        );
+
+        let received = stored_transitions.lock().unwrap();
+        assert_eq!(received.len(), 2, "replay should receive both transitions");
+        assert_eq!(received[0], first_transition);
+        assert_eq!(received[1], second_transition);
+
+        drop(received);
+        shutdown_tx.send(()).unwrap();
+        server_handle.await.unwrap();
     }
 }
