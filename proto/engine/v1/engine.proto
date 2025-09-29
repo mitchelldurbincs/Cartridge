@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package engine.v1;
+
+// Engine identification and versioning
+message EngineId {
+    string env_id = 1;     // Unique environment identifier (e.g., "tictactoe")
+    string build_id = 2;   // Build version for reproducibility
+}
+
+// Encoding format specifications for data serialization
+message Encoding {
+    string state = 1;         // State encoding format (e.g., "packed_u8:v1")
+    string action = 2;        // Action encoding format (e.g., "discrete:v1")
+    string obs = 3;           // Observation encoding format (e.g., "f32x27:v1")
+    uint32 schema_version = 4; // Schema version for evolution tracking
+}
+
+// Multi-dimensional discrete action space specification
+message MultiDiscrete {
+    repeated uint32 nvec = 1; // Number of discrete actions per dimension
+}
+
+// Continuous action space specification (Box space)
+message BoxSpec {
+    repeated float low = 1;   // Lower bounds for each dimension
+    repeated float high = 2;  // Upper bounds for each dimension
+    repeated uint32 shape = 3; // Shape of the action space
+}
+
+// Game capabilities and configuration
+message Capabilities {
+    EngineId id = 1;          // Engine identification
+    Encoding enc = 2;         // Data encoding specifications
+    uint32 max_horizon = 3;   // Maximum episode length
+    
+    // Action space specification (exactly one must be set)
+    oneof action_space {
+        uint32 discrete_n = 10;      // Discrete action space with n actions
+        MultiDiscrete multi = 11;     // Multi-dimensional discrete
+        BoxSpec continuous = 12;      // Continuous action space
+    }
+    
+    uint32 preferred_batch = 20; // Preferred batch size for optimal performance
+}
+
+// Request to reset environment to initial state
+message ResetRequest {
+    EngineId id = 1;        // Engine to reset
+    uint64 seed = 2;        // Random seed for deterministic reset
+    bytes hint = 3;         // Optional hint data for environment setup
+}
+
+// Response from environment reset
+message ResetResponse {
+    bytes state = 1;        // Initial state encoded as bytes
+    bytes obs = 2;          // Initial observation encoded as bytes
+}
+
+// Request to perform one simulation step
+message StepRequest {
+    EngineId id = 1;        // Engine to step
+    bytes state = 2;        // Current state encoded as bytes
+    bytes action = 3;       // Action to take encoded as bytes
+}
+
+// Response from one simulation step
+message StepResponse {
+    bytes state = 1;        // New state encoded as bytes
+    bytes obs = 2;          // New observation encoded as bytes
+    float reward = 3;       // Reward received from this step
+    bool done = 4;          // Whether episode has terminated
+}
+
+
+// Engine service definition
+service Engine {
+    // Get engine capabilities and configuration
+    rpc GetCapabilities(EngineId) returns (Capabilities);
+
+    // Reset environment to initial state
+    rpc Reset(ResetRequest) returns (ResetResponse);
+
+    // Perform single simulation step
+    rpc Step(StepRequest) returns (StepResponse);
+}

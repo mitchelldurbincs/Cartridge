@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package replay.v1;
+
+option go_package = "github.com/cartridge/replay/pkg/proto/replay/v1;replayv1";
+
+// Experience transition data
+message Transition {
+    // Unique identifier for this transition
+    string id = 1;
+
+    // Environment and episode metadata
+    string env_id = 2;           // Engine environment ID (e.g., "tictactoe")
+    string episode_id = 3;       // Episode identifier
+    uint32 step_number = 4;      // Step within episode (0-based)
+
+    // Transition data (encoded as bytes from engine)
+    bytes state = 5;             // Current state
+    bytes action = 6;            // Action taken
+    bytes next_state = 7;        // Resulting state
+    bytes observation = 8;       // Observation from current state
+    bytes next_observation = 9;  // Observation from next state
+
+    // Reward and terminal information
+    float reward = 10;           // Reward received
+    bool done = 11;             // Whether episode terminated
+
+    // Optional metadata
+    float priority = 12;         // Priority for prioritized replay (default 1.0)
+    uint64 timestamp = 13;       // Unix timestamp when stored
+    map<string, string> metadata = 14; // Additional key-value metadata
+}
+
+// Request to store a single transition
+message StoreTransitionRequest {
+    Transition transition = 1;
+}
+
+// Response from storing a transition
+message StoreTransitionResponse {
+    string transition_id = 1;    // ID of the stored transition
+    bool success = 2;            // Whether storage succeeded
+    string error_message = 3;    // Error details if failed
+}
+
+// Request to store multiple transitions (batch)
+message StoreBatchRequest {
+    repeated Transition transitions = 1;
+}
+
+// Response from batch storage
+message StoreBatchResponse {
+    repeated string transition_ids = 1;  // IDs of stored transitions
+    uint32 stored_count = 2;             // Number successfully stored
+    uint32 failed_count = 3;             // Number that failed
+    repeated string error_messages = 4;   // Error details for failures
+}
+
+// Sampling configuration
+message SampleConfig {
+    uint32 batch_size = 1;       // Number of transitions to sample
+    string env_id = 2;           // Filter by environment (optional)
+    bool prioritized = 3;        // Use priority-based sampling
+    float priority_alpha = 4;    // Priority exponent (for prioritized replay)
+    uint64 min_timestamp = 5;    // Only sample transitions after this time
+    uint64 max_timestamp = 6;    // Only sample transitions before this time
+}
+
+// Request to sample transitions for training
+message SampleRequest {
+    SampleConfig config = 1;
+}
+
+// Response containing sampled transitions
+message SampleResponse {
+    repeated Transition transitions = 1;
+    uint32 total_available = 2;  // Total transitions available for sampling
+    repeated float weights = 3;   // Importance sampling weights (for prioritized)
+}
+
+// Request for replay buffer statistics
+message GetStatsRequest {
+    string env_id = 1;  // Filter by environment (optional)
+}
+
+// Replay buffer statistics
+message StatsResponse {
+    uint64 total_transitions = 1;        // Total stored transitions
+    uint64 total_episodes = 2;           // Total complete episodes
+    map<string, uint64> transitions_by_env = 3; // Transitions per environment
+    uint64 oldest_timestamp = 4;         // Timestamp of oldest transition
+    uint64 newest_timestamp = 5;         // Timestamp of newest transition
+    uint64 storage_bytes = 6;            // Approximate storage usage
+}
+
+// Request to update transition priorities (for prioritized replay)
+message UpdatePrioritiesRequest {
+    repeated string transition_ids = 1;
+    repeated float new_priorities = 2;
+}
+
+// Response from priority update
+message UpdatePrioritiesResponse {
+    uint32 updated_count = 1;
+    repeated string error_messages = 2;
+}
+
+// Request to clear old transitions
+message ClearRequest {
+    string env_id = 1;          // Environment to clear (optional, clears all if empty)
+    uint64 before_timestamp = 2; // Clear transitions before this time
+    uint32 keep_last_n = 3;     // Keep the N most recent transitions
+}
+
+// Response from clear operation
+message ClearResponse {
+    uint64 cleared_count = 1;
+    uint64 remaining_count = 2;
+}
+
+// Replay service definition
+service Replay {
+    // Store a single transition
+    rpc StoreTransition(StoreTransitionRequest) returns (StoreTransitionResponse);
+
+    // Store multiple transitions in batch
+    rpc StoreBatch(StoreBatchRequest) returns (StoreBatchResponse);
+
+    // Sample transitions for training
+    rpc Sample(SampleRequest) returns (SampleResponse);
+
+    // Get buffer statistics
+    rpc GetStats(GetStatsRequest) returns (StatsResponse);
+
+    // Update transition priorities for prioritized replay
+    rpc UpdatePriorities(UpdatePrioritiesRequest) returns (UpdatePrioritiesResponse);
+
+    // Clear old or filtered transitions
+    rpc Clear(ClearRequest) returns (ClearResponse);
+}
