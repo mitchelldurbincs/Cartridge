@@ -188,7 +188,7 @@ impl Engine for EngineService {
         let mut obs_buf = self.buffer_pool.get_obs_buffer();
 
         // Perform step
-        let (reward, done) = game
+        let (reward, done, info) = game
             .step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf)
             .map_err(|e| Status::internal(format!("Step failed: {}", e)))?;
 
@@ -199,6 +199,7 @@ impl Engine for EngineService {
             obs: obs_buf.clone(),
             reward,
             done,
+            info,
         };
 
         // Return buffers to pool
@@ -433,6 +434,7 @@ mod tests {
         assert!(!step_resp.obs.is_empty());
         assert!(!step_resp.done); // Game should not be done after one move
         assert_eq!(step_resp.reward, 0.0); // No reward for ongoing game
+        assert_eq!(step_resp.info & 0x1FF, 0x1FFu64 & !(1u64 << 4));
     }
 
     #[tokio::test]
@@ -524,6 +526,7 @@ mod tests {
             .into_inner();
 
         assert_ne!(first_step.reward, second_step.reward);
+        assert_ne!(first_step.info, second_step.info);
 
         let service_again = EngineService::new();
 
@@ -556,6 +559,8 @@ mod tests {
             .into_inner();
 
         assert_eq!(first_step.reward, first_again.reward);
+        assert_eq!(first_step.info, first_again.info);
         assert_eq!(second_step.reward, second_again.reward);
+        assert_eq!(second_step.info, second_again.info);
     }
 }

@@ -70,6 +70,7 @@ message StepResponse {
     bytes obs = 2;          // New observation encoded as bytes
     float reward = 3;       // Reward received from this step
     bool done = 4;          // Whether episode has terminated
+    uint64 info = 5;        // Additional packed info bits (game-specific semantics)
 }
 
 
