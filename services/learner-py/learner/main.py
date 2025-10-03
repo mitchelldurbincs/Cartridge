@@ -41,7 +41,7 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
     weights = WeightPublisher(config.weights)
     checkpoints = CheckpointManager(config.checkpoints)
     control = ControlClient(config.control)
-    replay = ReplayClient(config.replay)
+    replay = ReplayClient(config.replay, metrics=metrics)
 
     async def heartbeat(update: AlgorithmUpdate) -> None:
         checkpoint_step = checkpoints.latest.step if checkpoints.latest else None
