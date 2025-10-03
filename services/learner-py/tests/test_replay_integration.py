@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
 from typing import AsyncIterator
 from unittest.mock import AsyncMock, Mock, patch
@@ -32,6 +33,23 @@ class MockSampleResponse:
 
     def __init__(self, transitions: list[MockTransition]):
         self.transitions = transitions
+
+
+@pytest.fixture
+def sample_response_missing_metadata() -> MockSampleResponse:
+    """Sample response containing a transition without log-prob/value metadata."""
+
+    obs_data = struct.pack("ff", 1.0, 2.0)
+    action_data = struct.pack("f", 0.0)
+    transition = MockTransition(
+        obs_data,
+        action_data,
+        reward=1.0,
+        done=False,
+        metadata={},
+    )
+
+    return MockSampleResponse([transition])
 
 
 class TestReplayConversion:
@@ -106,20 +124,18 @@ class TestReplayConversion:
         with pytest.raises(ValueError, match="Incompatible tensor sizes"):
             sample_response_to_batch(response)
 
-    def test_missing_metadata_error(self):
-        """Test that missing metadata raises errors."""
-        obs_data = struct.pack('ff', 1.0, 2.0)
-        action_data = struct.pack('f', 0.0)
+    def test_missing_metadata_defaults(self, sample_response_missing_metadata, caplog: pytest.LogCaptureFixture):
+        """Missing metadata should default to zeros while logging a warning."""
 
-        transition = MockTransition(
-            obs_data, action_data, 1.0, False,
-            metadata={'log_prob': '-0.1'}  # Missing 'value'
-        )
+        with caplog.at_level(logging.WARNING):
+            batch = sample_response_to_batch(sample_response_missing_metadata)
 
-        response = MockSampleResponse([transition])
-
-        with pytest.raises(ValueError, match="missing log-probability or value estimate"):
-            sample_response_to_batch(response)
+        assert isinstance(batch, TransitionBatch)
+        assert batch.log_probs.shape == (1,)
+        assert batch.values.shape == (1,)
+        assert batch.log_probs[0].item() == pytest.approx(0.0)
+        assert batch.values[0].item() == pytest.approx(0.0)
+        assert "missing log-probability/value" in caplog.text
 
 
 class TestReplayClientIntegration:

@@ -100,11 +100,16 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
         actions.append(_tensor_from_bytes(transition.action, dtype=torch.float32, field="action"))
         rewards.append(float(transition.reward))
         dones.append(bool(transition.done))
-        metadata = transition.metadata
-        if _LOG_PROB_KEY not in metadata or _VALUE_KEY not in metadata:
-            raise ValueError("Transition metadata missing log-probability or value estimate")
-        log_probs.append(float(metadata[_LOG_PROB_KEY]))
-        values.append(float(metadata[_VALUE_KEY]))
+        metadata = transition.metadata or {}
+        log_prob_str = metadata.get(_LOG_PROB_KEY)
+        value_str = metadata.get(_VALUE_KEY)
+        if log_prob_str is None or value_str is None:
+            _LOGGER.warning(
+                "Transition metadata missing log-probability/value; defaulting to zero (available keys: %s)",
+                sorted(metadata.keys()),
+            )
+        log_probs.append(float(log_prob_str) if log_prob_str is not None else 0.0)
+        values.append(float(value_str) if value_str is not None else 0.0)
 
     # Validate and stack tensor fields with improved error handling
     try:
