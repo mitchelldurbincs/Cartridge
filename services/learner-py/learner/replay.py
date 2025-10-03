@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Mapping, Protocol
 
 import torch
@@ -10,6 +11,7 @@ from .datamodel import TransitionBatch
 
 _LOG_PROB_KEY = "log_prob"
 _VALUE_KEY = "value"
+_LOGGER = logging.getLogger(__name__)
 
 
 class TransitionLike(Protocol):
@@ -34,15 +36,47 @@ def _tensor_from_bytes(blob: bytes, *, dtype: torch.dtype, field: str) -> torch.
     return tensor.clone()
 
 
-def _stack_1d(tensors: Iterable[torch.Tensor], *, field: str) -> torch.Tensor:
-    collected = [t.reshape(-1) for t in tensors]
-    if not collected:
-        raise ValueError("SampleResponse did not include any transitions")
-    first_shape = collected[0].shape
-    for tensor in collected[1:]:
-        if tensor.shape != first_shape:
-            raise ValueError(f"Inconsistent shapes for '{field}' tensors: {tensor.shape} vs {first_shape}")
-    return torch.stack(collected).contiguous()
+def _validate_tensor_compatibility(tensors: list[torch.Tensor], field: str) -> tuple[torch.Size, int]:
+    """Validate that tensors can be stacked and return expected shape info."""
+    if not tensors:
+        raise ValueError(f"No tensors provided for field '{field}'")
+
+    # Check original shapes before reshaping
+    first_original_shape = tensors[0].shape
+    first_numel = tensors[0].numel()
+
+    for i, tensor in enumerate(tensors[1:], 1):
+        if tensor.numel() != first_numel:
+            raise ValueError(
+                f"Incompatible tensor sizes for '{field}': transition {i} has {tensor.numel()} elements, "
+                f"but transition 0 has {first_numel} elements (shapes: {tensor.shape} vs {first_original_shape})"
+            )
+
+    return first_original_shape, first_numel
+
+
+def _stack_tensors(tensors: list[torch.Tensor], *, field: str, target_shape: torch.Size | None = None) -> torch.Tensor:
+    """Stack tensors with improved shape validation and optional reshaping."""
+    if not tensors:
+        raise ValueError(f"No tensors to stack for field '{field}'")
+
+    # Validate compatibility
+    original_shape, numel = _validate_tensor_compatibility(tensors, field)
+
+    if target_shape is None:
+        # Default behavior: flatten each tensor
+        reshaped = [t.reshape(-1) for t in tensors]
+        _LOGGER.debug(f"Stacking {len(tensors)} tensors for '{field}', flattened shape: {reshaped[0].shape}")
+    else:
+        # Reshape to specific target shape
+        if torch.Size(target_shape).numel() != numel:
+            raise ValueError(
+                f"Target shape {target_shape} is incompatible with tensor size {numel} for field '{field}'"
+            )
+        reshaped = [t.reshape(target_shape) for t in tensors]
+        _LOGGER.debug(f"Stacking {len(tensors)} tensors for '{field}', target shape: {target_shape}")
+
+    return torch.stack(reshaped).contiguous()
 
 
 def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
@@ -72,13 +106,32 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
         log_probs.append(float(metadata[_LOG_PROB_KEY]))
         values.append(float(metadata[_VALUE_KEY]))
 
+    # Validate and stack tensor fields with improved error handling
+    try:
+        obs_tensor = _stack_tensors(observations, field="observation").to(device="cpu")
+        action_tensor = _stack_tensors(actions, field="action").to(device="cpu")
+    except ValueError as e:
+        _LOGGER.error("Failed to convert replay response to batch: %s", e)
+        raise ValueError(f"Replay data conversion failed: {e}") from e
+
+    # Create scalar tensors
+    log_probs_tensor = torch.tensor(log_probs, dtype=torch.float32, device="cpu")
+    rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device="cpu")
+    dones_tensor = torch.tensor(dones, dtype=torch.bool, device="cpu")
+    values_tensor = torch.tensor(values, dtype=torch.float32, device="cpu")
+
+    _LOGGER.debug(
+        "Created TransitionBatch: obs=%s, actions=%s, batch_size=%d",
+        obs_tensor.shape, action_tensor.shape, len(transitions)
+    )
+
     return TransitionBatch(
-        observations=_stack_1d(observations, field="observation").to(device="cpu"),
-        actions=_stack_1d(actions, field="action").to(device="cpu"),
-        log_probs=torch.tensor(log_probs, dtype=torch.float32, device="cpu"),
-        rewards=torch.tensor(rewards, dtype=torch.float32, device="cpu"),
-        dones=torch.tensor(dones, dtype=torch.bool, device="cpu"),
-        values=torch.tensor(values, dtype=torch.float32, device="cpu"),
+        observations=obs_tensor,
+        actions=action_tensor,
+        log_probs=log_probs_tensor,
+        rewards=rewards_tensor,
+        dones=dones_tensor,
+        values=values_tensor,
     )
 
 
