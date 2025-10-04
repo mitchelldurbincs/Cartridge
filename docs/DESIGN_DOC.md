@@ -145,6 +145,9 @@ MUCH LATER
 
 # Data contracts that make the UI easy
 
+For the full HTTP API contract (request/response schemas, lifecycle semantics, and validation rules) refer to
+[`docs/orchestrator_api.md`](./orchestrator_api.md).
+
 ## Experiment config (example schema)
 
 ```json
