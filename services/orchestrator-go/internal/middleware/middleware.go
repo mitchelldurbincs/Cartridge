@@ -4,22 +4,40 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
-// RequestLogger creates a zerolog-based request logger middleware
-func RequestLogger(logger zerolog.Logger) func(next http.Handler) http.Handler {
-	return middleware.RequestLogger(&RequestLoggerFormatter{logger})
+// LogEntry interface matches chi's LogEntry
+type LogEntry interface {
+	Write(status, bytes int, header http.Header, elapsed time.Duration, extra interface{})
+	Panic(v interface{}, stack []byte)
 }
 
-// RequestLoggerFormatter implements chi's LogFormatter interface
+// LogFormatter interface matches chi's LogFormatter
+type LogFormatter interface {
+	NewLogEntry(r *http.Request) LogEntry
+}
+
+// RequestLogger creates a zerolog-based request logger middleware
+func RequestLogger(logger zerolog.Logger) func(next http.Handler) http.Handler {
+	formatter := &RequestLoggerFormatter{logger}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			entry := formatter.NewLogEntry(r)
+			ww := &responseWriter{ResponseWriter: w, entry: entry, start: time.Now()}
+			next.ServeHTTP(ww, r)
+			entry.Write(ww.status, ww.written, w.Header(), time.Since(ww.start), nil)
+		})
+	}
+}
+
+// RequestLoggerFormatter implements LogFormatter interface
 type RequestLoggerFormatter struct {
 	Logger zerolog.Logger
 }
 
-func (l *RequestLoggerFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
+func (l *RequestLoggerFormatter) NewLogEntry(r *http.Request) LogEntry {
 	correlationID := r.Header.Get("X-Correlation-ID")
 	if correlationID == "" {
 		correlationID = uuid.New().String()
@@ -84,6 +102,29 @@ func (l *RequestLoggerEntry) Panic(v interface{}, stack []byte) {
 		Interface("panic", v).
 		Bytes("stack", stack).
 		Msg("Request panic")
+}
+
+// responseWriter wraps http.ResponseWriter to capture status and bytes written
+type responseWriter struct {
+	http.ResponseWriter
+	entry   LogEntry
+	status  int
+	written int
+	start   time.Time
+}
+
+func (w *responseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.written += n
+	return n, err
 }
 
 // CorrelationID adds a correlation ID to requests if not present
