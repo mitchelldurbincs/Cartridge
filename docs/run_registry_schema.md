@@ -57,12 +57,18 @@ Concrete instantiations of experiments. Drives `POST /runs`, `POST /runs/{id}/pa
 | `id` | `uuid` | Primary key. |
 | `experiment_id` | `uuid` | FK → `experiments.id` ON DELETE RESTRICT. |
 | `version_id` | `uuid` | FK → `experiment_versions.id` capturing the manifest used at launch. |
-| `state` | `run_state` enum | Values: `queued`, `provisioning`, `running`, `paused`, `completed`, `failed`, `terminated`. Mirrors REST contract for pause/resume/terminate and dashboard filters. |
+| `state` | `run_state` enum | Values: `queued`, `provisioning`, `running`, `paused`, `terminating`, `completed`, `failed`, `errored`, `terminated`. Mirrors REST contract for pause/resume/terminate and dashboard filters. |
 | `status_message` | `text` | Latest user-facing status detail. |
 | `priority` | `integer` | Scheduler priority (higher = sooner). Default 0. |
 | `launch_manifest` | `jsonb` | Resolved run manifest (experiment config + overrides + scheduler metadata). Immutable. |
 | `overrides` | `jsonb` | User-provided overrides allowed by whitelist. |
-| `heartbeat_at` | `timestamptz` | Updated by `/runs/{id}/heartbeat` endpoint. |
+| `last_heartbeat_at` | `timestamptz` | Updated by `/runs/{id}/heartbeat` endpoint. |
+| `runtime_status` | `runtime_status` enum | Values: `running`, `paused`, `terminating`, `errored`. Reflects latest learner-reported state from heartbeats. |
+| `health_status` | `run_health` enum | Values: `healthy`, `heartbeat_stale`, `unresponsive`. Automatically derived from heartbeat cadence. |
+| `current_step` | `bigint` | Monotonic learner progress counter. |
+| `samples_per_sec` | `double precision` | Rolling average from last heartbeat. |
+| `loss` | `double precision` | Most recent reported loss metric. |
+| `checkpoint_version` | `bigint` | Highest checkpoint acknowledged by orchestrator. |
 | `started_at` | `timestamptz` | Set when state enters `running`. |
 | `ended_at` | `timestamptz` | Set when state in terminal set `{completed, failed, terminated}`. |
 | `created_by` | `uuid` | FK → `users.id`. |
@@ -72,7 +78,8 @@ Concrete instantiations of experiments. Drives `POST /runs`, `POST /runs/{id}/pa
 **Indexes**
 * `INDEX ON (experiment_id, created_at DESC)` for experiment detail page.
 * `INDEX ON (state)` to filter active runs quickly.
-* Partial index `INDEX ON (heartbeat_at) WHERE state = 'running'` for stale-run watchdog.
+* Partial index `INDEX ON (last_heartbeat_at) WHERE state = 'running'` for stale-run watchdog.
+* Partial index `INDEX ON (health_status) WHERE health_status <> 'healthy'` for alert fan-out.
 
 ### `run_state_transitions`
 Audit log for state changes, feeding WebSocket events.
@@ -133,6 +140,47 @@ Tracks `/runs/{id}/tune` API calls and eventual application outcome.
 ### `run_metrics_rollup` (optional helper)
 Materialized view or table to store aggregates (latest step, reward mean) for dashboard cards. Populated asynchronously from metrics ingestion. Not part of MVP but referenced by UI.
 
+### `run_commands`
+Stores operator-initiated control commands (pause/resume/terminate/tune) and orchestrator delivery metadata.
+
+| Column | Type | Constraints / Notes |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key. Provided by caller for idempotency. |
+| `run_id` | `uuid` | FK → `runs.id` ON DELETE CASCADE. |
+| `type` | `command_type` enum | Values: `pause`, `resume`, `terminate`, `tune`. |
+| `payload` | `jsonb` | Type-specific payload persisted for auditing. |
+| `issued_by` | `uuid` | FK → `users.id` or service account. |
+| `issued_at` | `timestamptz` | Default `now()`. |
+| `delivered_at` | `timestamptz` | Nullable. Set when learner receives command. |
+| `acknowledged_at` | `timestamptz` | Nullable. Set when learner confirms execution. |
+| `created_at` | `timestamptz` | Default `now()`. |
+
+**Indexes**
+* `INDEX ON (run_id, created_at DESC)` for command timelines.
+* Partial `INDEX ON (delivered_at) WHERE delivered_at IS NULL` to find outstanding deliveries.
+
+### `control_audit`
+Append-only ledger of every control command request, including network metadata for compliance.
+
+| Column | Type | Constraints / Notes |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key. |
+| `command_id` | `uuid` | FK → `run_commands.id` ON DELETE CASCADE. |
+| `run_id` | `uuid` | FK → `runs.id` ON DELETE CASCADE. |
+| `actor_type` | `text` | `operator` or `system`. |
+| `actor_identifier` | `text` | Email, service principal, or automation slug. |
+| `source_ip` | `inet` | Caller IP captured at ingress. |
+| `user_agent` | `text` | Request User-Agent header when available. |
+| `mtls_fingerprint` | `text` | Client certificate fingerprint when mTLS is in use. |
+| `payload_hash` | `bytea` | SHA256 hash of canonicalized payload. |
+| `prev_hash` | `bytea` | Hash of previous audit entry for tamper detection. |
+| `entry_hash` | `bytea` | Hash of current entry (`prev_hash` + payload). |
+| `created_at` | `timestamptz` | Default `now()`. |
+
+**Indexes**
+* `INDEX ON (run_id, created_at DESC)` to reconstruct audit trails.
+* `INDEX ON (command_id)` for quick joins back to command metadata.
+
 ---
 
 ## Relationships summary
@@ -142,6 +190,8 @@ Materialized view or table to store aggregates (latest step, reward mean) for da
 * `runs.id` ←→ `artifacts.run_id` (one-to-many).
 * `runs.id` ←→ `run_state_transitions.run_id` (one-to-many).
 * `runs.id` ←→ `tune_events.run_id` (one-to-many).
+* `runs.id` ←→ `run_commands.run_id` (one-to-many).
+* `run_commands.id` ←→ `control_audit.command_id` (one-to-many).
 * `users.id` referenced from creator / actor columns for auditability.
 
 These foreign keys are set to `ON DELETE CASCADE` for child records that should disappear with a run (artifacts, transitions, tune events) and `ON DELETE RESTRICT` where historical integrity matters (runs referencing experiments).
@@ -156,9 +206,31 @@ CREATE TYPE run_state AS ENUM (
   'provisioning',
   'running',
   'paused',
+  'terminating',
   'completed',
   'failed',
+  'errored',
   'terminated'
+);
+
+CREATE TYPE runtime_status AS ENUM (
+  'running',
+  'paused',
+  'terminating',
+  'errored'
+);
+
+CREATE TYPE run_health AS ENUM (
+  'healthy',
+  'heartbeat_stale',
+  'unresponsive'
+);
+
+CREATE TYPE command_type AS ENUM (
+  'pause',
+  'resume',
+  'terminate',
+  'tune'
 );
 
 CREATE TYPE artifact_kind AS ENUM (
@@ -190,9 +262,12 @@ Below is an initial PostgreSQL migration (`0001_run_registry.sql`) establishing 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"; -- for gen_random_uuid()
 
 -- Enums
-CREATE TYPE run_state AS ENUM ('queued','provisioning','running','paused','completed','failed','terminated');
+CREATE TYPE run_state AS ENUM ('queued','provisioning','running','paused','terminating','completed','failed','errored','terminated');
+CREATE TYPE runtime_status AS ENUM ('running','paused','terminating','errored');
+CREATE TYPE run_health AS ENUM ('healthy','heartbeat_stale','unresponsive');
 CREATE TYPE artifact_kind AS ENUM ('checkpoint','policy','replay','evaluation','log_bundle','custom');
 CREATE TYPE tune_state AS ENUM ('pending','applied','rejected','superseded');
+CREATE TYPE command_type AS ENUM ('pause','resume','terminate','tune');
 
 -- Experiments
 CREATE TABLE experiments (
@@ -237,7 +312,13 @@ CREATE TABLE runs (
   priority integer NOT NULL DEFAULT 0,
   launch_manifest jsonb NOT NULL,
   overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
-  heartbeat_at timestamptz,
+  last_heartbeat_at timestamptz,
+  runtime_status runtime_status,
+  health_status run_health NOT NULL DEFAULT 'healthy',
+  current_step bigint,
+  samples_per_sec double precision,
+  loss double precision,
+  checkpoint_version bigint,
   started_at timestamptz,
   ended_at timestamptz,
   created_by uuid,
@@ -246,8 +327,10 @@ CREATE TABLE runs (
 );
 CREATE INDEX runs_experiment_created_idx ON runs (experiment_id, created_at DESC);
 CREATE INDEX runs_state_idx ON runs (state);
-CREATE INDEX runs_active_heartbeat_idx ON runs (heartbeat_at)
+CREATE INDEX runs_active_heartbeat_idx ON runs (last_heartbeat_at)
   WHERE state = 'running';
+CREATE INDEX runs_health_idx ON runs (health_status)
+  WHERE health_status <> 'healthy';
 
 CREATE TABLE run_state_transitions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -296,6 +379,39 @@ CREATE INDEX tune_events_run_idx ON tune_events (run_id, created_at DESC);
 CREATE INDEX tune_events_pending_idx ON tune_events (state)
   WHERE state = 'pending';
 
+-- Control commands
+CREATE TABLE run_commands (
+  id uuid PRIMARY KEY,
+  run_id uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  type command_type NOT NULL,
+  payload jsonb NOT NULL,
+  issued_by uuid,
+  issued_at timestamptz NOT NULL DEFAULT now(),
+  delivered_at timestamptz,
+  acknowledged_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX run_commands_run_idx ON run_commands (run_id, created_at DESC);
+CREATE INDEX run_commands_outstanding_idx ON run_commands (delivered_at)
+  WHERE delivered_at IS NULL;
+
+CREATE TABLE control_audit (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  command_id uuid NOT NULL REFERENCES run_commands(id) ON DELETE CASCADE,
+  run_id uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  actor_type text NOT NULL,
+  actor_identifier text NOT NULL,
+  source_ip inet,
+  user_agent text,
+  mtls_fingerprint text,
+  payload_hash bytea,
+  prev_hash bytea,
+  entry_hash bytea,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX control_audit_run_idx ON control_audit (run_id, created_at DESC);
+CREATE INDEX control_audit_command_idx ON control_audit (command_id);
+
 -- Trigger to maintain updated_at
 CREATE OR REPLACE FUNCTION touch_updated_at()
 RETURNS TRIGGER AS $$
@@ -319,9 +435,31 @@ class RunState(enum.Enum):
     provisioning = "provisioning"
     running = "running"
     paused = "paused"
+    terminating = "terminating"
     completed = "completed"
     failed = "failed"
+    errored = "errored"
     terminated = "terminated"
+
+
+class RuntimeStatus(enum.Enum):
+    running = "running"
+    paused = "paused"
+    terminating = "terminating"
+    errored = "errored"
+
+
+class RunHealth(enum.Enum):
+    healthy = "healthy"
+    heartbeat_stale = "heartbeat_stale"
+    unresponsive = "unresponsive"
+
+
+class CommandType(enum.Enum):
+    pause = "pause"
+    resume = "resume"
+    terminate = "terminate"
+    tune = "tune"
 
 class Experiment(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -345,7 +483,13 @@ class Run(SQLModel, table=True):
     priority: int = 0
     launch_manifest: dict
     overrides: dict = Field(default_factory=dict)
-    heartbeat_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    last_heartbeat_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    runtime_status: RuntimeStatus | None = Field(default=None)
+    health_status: RunHealth = Field(default=RunHealth.healthy)
+    current_step: int | None = None
+    samples_per_sec: float | None = None
+    loss: float | None = None
+    checkpoint_version: int | None = None
     started_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
     ended_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
     created_by: UUID | None = Field(foreign_key="users.id")
@@ -353,6 +497,35 @@ class Run(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=sa.Column(sa.DateTime(timezone=True)))
     artifacts: list["Artifact"] = Relationship(back_populates="run")
     tune_events: list["TuneEvent"] = Relationship(back_populates="run")
+    commands: list["RunCommand"] = Relationship(back_populates="run")
+
+
+class RunCommand(SQLModel, table=True):
+    id: UUID = Field(primary_key=True)
+    run_id: UUID = Field(foreign_key="runs.id")
+    type: CommandType
+    payload: dict
+    issued_by: UUID | None = Field(default=None, foreign_key="users.id")
+    issued_at: datetime = Field(default_factory=datetime.utcnow, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    delivered_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    acknowledged_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=sa.Column(sa.DateTime(timezone=True)))
+    run: Run = Relationship(back_populates="commands")
+
+
+class ControlAudit(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    command_id: UUID = Field(foreign_key="run_commands.id")
+    run_id: UUID = Field(foreign_key="runs.id")
+    actor_type: str
+    actor_identifier: str
+    source_ip: str | None = None
+    user_agent: str | None = None
+    mtls_fingerprint: str | None = None
+    payload_hash: bytes | None = None
+    prev_hash: bytes | None = None
+    entry_hash: bytes | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=sa.Column(sa.DateTime(timezone=True)))
 ```
 
 This snippet mirrors the SQL migration, ensuring the REST layer can hydrate response payloads without impedance mismatch.

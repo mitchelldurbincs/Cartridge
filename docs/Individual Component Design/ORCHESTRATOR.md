@@ -20,6 +20,11 @@ packages.
 Out of scope: GPU/host placement decisions (delegated to the scheduler), per-run cost attribution, and complex multi-tenant
 queueing.
 
+The service persists canonical run lifecycle using the shared `run_state` enum: `queued`, `provisioning`, `running`, `paused`,
+`terminating`, `completed`, `failed`, `errored`, and `terminated`. Heartbeat-derived learner perspective is stored separately in
+`runs.runtime_status`, while health escalations use `runs.health_status` to represent `healthy`, `heartbeat_stale`, or
+`unresponsive`.
+
 ## Control plane
 
 ### Heartbeat endpoint
@@ -28,7 +33,7 @@ Learners POST heartbeats to `/runs/{run_id}/heartbeat`. Payloads are JSON with t
 | Field | Type | Units | Required | Description |
 | --- | --- | --- | --- | --- |
 | `run_id` | string | — | ✅ | Must match the path parameter; double-checked server-side. |
-| `status` | string | — | ✅ | Enum: `running`, `paused`, `terminating`, `errored`. Mirrors learner local state. |
+| `status` | string | — | ✅ | Enum: `running`, `paused`, `terminating`, `errored`. Mirrors learner local state and persists into `runs.runtime_status`. |
 | `step` | integer | steps | ✅ | Global optimizer step processed. Non-decreasing. |
 | `samples_per_sec` | number | samples/second | ✅ | Rolling average of learner ingest rate. |
 | `loss` | number | unitless | ✅ | Last full-batch loss scalar for monitoring. |
@@ -44,10 +49,10 @@ The orchestrator enforces:
 ### Frequency & timeout policy
 - Learners **must send heartbeats every 15 seconds**. Shorter cadences are accepted but throttled with 429s if below 5 seconds to
   avoid excessive load.
-- If no valid heartbeat is received within **45 seconds**, the run is marked `heartbeat_stale` and a warning is published to the
-  dashboard and alerting topic.
-- After **3 consecutive missed intervals (≈135 seconds)**, the orchestrator escalates to `unresponsive`, triggers a PagerDuty
-  incident, and emits a terminate recommendation. Operators can override to allow additional time.
+- If no valid heartbeat is received within **45 seconds**, the run's `runs.health_status` is set to `heartbeat_stale` and a
+  warning is published to the dashboard and alerting topic.
+- After **3 consecutive missed intervals (≈135 seconds)**, the orchestrator escalates the `health_status` to `unresponsive`,
+  triggers a PagerDuty incident, and emits a terminate recommendation. Operators can override to allow additional time.
 
 ## Runtime control commands
 
@@ -85,24 +90,23 @@ following shape:
 ### Validation & delivery
 - Commands must reference existing runs; unknown IDs ⇒ `404`.
 - Duplicate command IDs are idempotently ignored and return `200` with existing record.
-- All accepted commands are written to the `run_commands` table with a `delivered_at` nullable column.
+- All accepted commands are written to the `run_commands` table (`id`, `run_id`, `type`, `payload`, `issued_by`, `issued_at`, `delivered_at`, `acknowledged_at`, `created_at`).
 - The learner control client long-polls `/runs/{run_id}/commands/next`; when it ACKs a command, the orchestrator stamps
   `delivered_at` and `acknowledged_at` timestamps and mirrors them in audit logs.
 - Validation errors respond with `422` and machine-readable error codes so learners can log actionable messages.
 
 ### Auditing
 - Every command persists the envelope plus request metadata (source IP, user-agent, mTLS client cert fingerprint) into an
-  append-only `control_audit` table.
+  append-only `control_audit` table keyed by `command_id` for audit replay.
 - Audit entries carry a cryptographic hash chain (`prev_hash`, `entry_hash`) to detect tampering.
 - An hourly job exports deltas to object storage for long-term retention and feeds a read-only dashboard for compliance review.
 
 ## Status propagation
-- **Postgres** is the source of truth: heartbeat-derived fields (`last_heartbeat_at`, `step`, `status`) and command state are
-  stored within the `runs` table.
+- **Postgres** is the source of truth: heartbeat-derived fields (`last_heartbeat_at`, `current_step`, `runtime_status`, `health_status`, throughput metrics) and command state live within the `runs` and `run_commands` tables.
 - **Web dashboard** subscribes to a `run-status` NATS subject published by the orchestrator. Each state change fan-outs a compact
   JSON document (`run_id`, `status`, `step`, `samples_per_sec`, `last_error`) so UI tables update in near real time.
 - **Alerting** hooks are implemented via the same event stream with routing keys:
-  - `heartbeat_stale` triggers a Slack warning in `#ml-ops`.
+  - `heartbeat_stale` triggers a Slack warning in `#ml-ops` whenever `runs.health_status` transitions away from `healthy`.
   - `unresponsive` escalates to PagerDuty.
   - `terminate` and `errored` events emit structured payloads consumed by the incident pipeline.
 - Downstream consumers are expected to treat the stream as level-triggered: they must coalesce repeated states and always fall
