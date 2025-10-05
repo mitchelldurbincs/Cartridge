@@ -2,18 +2,16 @@
 FROM rust:1.70 as builder
 
 # Install protoc
-RUN apt-get update && apt-get install -y protobuf-compiler
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock ./
+# Copy the repository structure needed for the workspace build.
+COPY proto/ proto/
+COPY services/actor-rust/ services/actor-rust/
+COPY services/engine-rust/ services/engine-rust/
 
-# Copy all crate directories
-COPY engine-core/ engine-core/
-COPY engine-server/ engine-server/
-COPY engine-proto/ engine-proto/
-COPY games-tictactoe/ games-tictactoe/
+WORKDIR /workspace/services/engine-rust
 
 # Build the application
 RUN cargo build --release --bin engine-server
@@ -25,7 +23,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
-COPY --from=builder /app/target/release/engine-server /usr/local/bin/engine-server
+COPY --from=builder /workspace/services/engine-rust/target/release/engine-server /usr/local/bin/engine-server
 
 # Create non-root user
 RUN useradd -r -u 1000 engine

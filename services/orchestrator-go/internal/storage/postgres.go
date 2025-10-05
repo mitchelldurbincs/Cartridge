@@ -1,3 +1,5 @@
+//go:build postgres
+
 package storage
 
 import (
@@ -6,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	_ "github.com/lib/pq"
 	"github.com/cartridge/orchestrator/internal/types"
+	_ "github.com/lib/pq"
 )
 
 // PostgresStore implements RunStore backed by PostgreSQL

@@ -1,0 +1,39 @@
+replay:
+  endpoint: replay:8080
+  tls_enabled: false
+  prefetch_depth: 4
+  batch_size: 64
+
+training:
+  rollout_size: 256
+  learning_rate: 0.0003
+  seed: 42
+  device: cpu
+  observation_dim: 29
+  action_dim: 9
+
+algorithm:
+  name: ppo
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  num_epochs: 4
+  minibatch_size: 128
+
+checkpoints:
+  bucket: /checkpoints
+  interval_steps: 1000
+  keep_last: 3
+
+weights:
+  backend: redis
+  endpoint: redis://redis:6379/0
+  channel: learner_weights
+
+control:
+  orchestrator_endpoint: http://orchestrator:8080/api/v1
+  run_id: local-run
+  heartbeat_interval_seconds: 30
