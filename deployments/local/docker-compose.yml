@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  engine:
+    build:
+      context: ../..
+      dockerfile: services/engine-rust/Dockerfile
+    image: cartridge/engine-rust:local
+    environment:
+      ENGINE_SERVER_ADDR: 0.0.0.0:50051
+    ports:
+      - "50051:50051"
+
+  replay:
+    build:
+      context: ../../services/replay-go
+    image: cartridge/replay-go:local
+    command: ["replay-server", "-port", "8080", "-max-size", "200000"]
+    environment:
+      REPLAY_PORT: "8080"
+      REPLAY_MAX_SIZE: "200000"
+    ports:
+      - "8081:8080"
+
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: services/orchestrator-go/Dockerfile
+    image: cartridge/orchestrator-go:local
+    ports:
+      - "8080:8080"
+    depends_on:
+      - engine
+      - replay
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  learner:
+    build:
+      context: ../..
+      dockerfile: services/learner-py/Dockerfile
+    image: cartridge/learner-py:local
+    command: ["--config", "/config/learner.yaml"]
+    volumes:
+      - learner-checkpoints:/checkpoints
+      - ./config/learner.yaml:/config/learner.yaml:ro
+    depends_on:
+      - replay
+      - orchestrator
+      - redis
+
+  actor:
+    build:
+      context: ../..
+      dockerfile: services/actor-rust/Dockerfile
+    image: cartridge/actor-rust:local
+    environment:
+      ACTOR_ENGINE_ADDR: http://engine:50051
+      ACTOR_REPLAY_ADDR: http://replay:8080
+      ACTOR_ACTOR_ID: actor-rust-1
+      ACTOR_ENV_ID: tictactoe
+      ACTOR_BATCH_SIZE: "64"
+      ACTOR_FLUSH_INTERVAL: "5"
+      ACTOR_LOG_LEVEL: info
+    depends_on:
+      - engine
+      - replay
+      - learner
+
+volumes:
+  learner-checkpoints:
+  redis-data:
