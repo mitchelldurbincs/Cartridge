@@ -57,6 +57,7 @@ use crate::typed::{Capabilities, EngineId, Game};
 /// let engine_id = erased_game.engine_id();
 /// println!("Game: {}", engine_id.env_id);
 /// ```
+#[derive(Debug)]
 pub struct GameAdapter<T: Game> {
     game: T,
     rng: ChaCha20Rng,
@@ -130,7 +131,7 @@ impl<T: Game> ErasedGame for GameAdapter<T> {
         action: &[u8],
         out_state: &mut Vec<u8>,
         out_obs: &mut Vec<u8>,
-    ) -> Result<(f32, bool), ErasedGameError> {
+    ) -> Result<(f32, bool, u64), ErasedGameError> {
         // Clear output buffers
         out_state.clear();
         out_obs.clear();

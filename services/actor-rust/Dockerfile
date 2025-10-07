@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.70 AS builder
+FROM rust:1.81 AS builder
 
 # Install protoc
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*

@@ -54,7 +54,7 @@ pub enum ErasedGameError {
 ///     Ok(())
 /// }
 /// ```
-pub trait ErasedGame: Send + Sync + 'static {
+pub trait ErasedGame: Send + Sync + std::fmt::Debug + 'static {
     /// Get engine identification information
     fn engine_id(&self) -> EngineId;
 

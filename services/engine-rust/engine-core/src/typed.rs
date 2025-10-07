@@ -102,7 +102,7 @@ pub struct Capabilities {
 /// #   fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> { todo!() }
 /// }
 /// ```
-pub trait Game: Send + Sync + 'static {
+pub trait Game: Send + Sync + std::fmt::Debug + 'static {
     /// Game state type - should be efficiently copyable
     type State: Send + Sync + 'static;
 
