@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -109,7 +111,185 @@ func loggingInterceptor(
 		status = "ERROR"
 	}
 
-	log.Printf("[%s] %s - %v (%s)", status, info.FullMethod, duration, req)
+	log.Printf("[%s] %s - %v %s", status, info.FullMethod, duration, summarizeRequest(req))
 
 	return resp, err
+}
+
+func summarizeRequest(req interface{}) string {
+	summary, ok := buildSummary(req)
+	if !ok {
+		return fmt.Sprintf("(type=%T)", req)
+	}
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Sprintf("(type=%T)", req)
+	}
+
+	return string(encoded)
+}
+
+func buildSummary(req interface{}) (interface{}, bool) {
+	switch r := req.(type) {
+	case *replayv1.StoreTransitionRequest:
+		return &struct {
+			Transition *transitionSummary `json:"transition"`
+		}{Transition: summarizeTransition(r.GetTransition())}, true
+	case *replayv1.StoreBatchRequest:
+		return summarizeStoreBatchRequest(r), true
+	case *replayv1.SampleRequest:
+		if r.GetConfig() == nil {
+			return &struct{}{}, true
+		}
+		cfg := r.GetConfig()
+		return &struct {
+			BatchSize     uint32  `json:"batch_size"`
+			EnvID         string  `json:"env_id,omitempty"`
+			Prioritized   bool    `json:"prioritized"`
+			PriorityAlpha float32 `json:"priority_alpha,omitempty"`
+			MinTimestamp  uint64  `json:"min_timestamp,omitempty"`
+			MaxTimestamp  uint64  `json:"max_timestamp,omitempty"`
+		}{
+			BatchSize:     cfg.GetBatchSize(),
+			EnvID:         cfg.GetEnvId(),
+			Prioritized:   cfg.GetPrioritized(),
+			PriorityAlpha: cfg.GetPriorityAlpha(),
+			MinTimestamp:  cfg.GetMinTimestamp(),
+			MaxTimestamp:  cfg.GetMaxTimestamp(),
+		}, true
+	case *replayv1.GetStatsRequest:
+		return &struct {
+			EnvID string `json:"env_id,omitempty"`
+		}{EnvID: r.GetEnvId()}, true
+	case *replayv1.UpdatePrioritiesRequest:
+		return &struct {
+			TransitionCount int      `json:"transition_count"`
+			PriorityCount   int      `json:"priority_count"`
+			SampledIDs      []string `json:"sampled_ids,omitempty"`
+		}{
+			TransitionCount: len(r.GetTransitionIds()),
+			PriorityCount:   len(r.GetNewPriorities()),
+			SampledIDs:      sampleStrings(r.GetTransitionIds(), 3),
+		}, true
+	case *replayv1.ClearRequest:
+		return &struct {
+			EnvID     string `json:"env_id,omitempty"`
+			Before    uint64 `json:"before_timestamp,omitempty"`
+			KeepLastN uint32 `json:"keep_last_n,omitempty"`
+		}{
+			EnvID:     r.GetEnvId(),
+			Before:    r.GetBeforeTimestamp(),
+			KeepLastN: r.GetKeepLastN(),
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+func summarizeStoreBatchRequest(req *replayv1.StoreBatchRequest) interface{} {
+	transitions := req.GetTransitions()
+	if len(transitions) == 0 {
+		return &struct {
+			TransitionCount int `json:"transition_count"`
+		}{TransitionCount: 0}
+	}
+
+	envCounts := make(map[string]int)
+	for _, t := range transitions {
+		env := t.GetEnvId()
+		if env == "" {
+			env = "(unknown)"
+		}
+		envCounts[env]++
+	}
+
+	return &struct {
+		TransitionCount int                  `json:"transition_count"`
+		EnvCounts       map[string]int       `json:"env_counts"`
+		Sampled         []*transitionSummary `json:"sampled_transitions,omitempty"`
+	}{
+		TransitionCount: len(transitions),
+		EnvCounts:       envCounts,
+		Sampled:         sampleTransitions(transitions, 2),
+	}
+}
+
+type transitionSummary struct {
+	ID                string   `json:"id"`
+	EnvID             string   `json:"env_id"`
+	EpisodeID         string   `json:"episode_id"`
+	StepNumber        uint32   `json:"step_number"`
+	Reward            float32  `json:"reward"`
+	Done              bool     `json:"done"`
+	Priority          float32  `json:"priority"`
+	Timestamp         uint64   `json:"timestamp"`
+	StateLength       int      `json:"state_length"`
+	ActionLength      int      `json:"action_length"`
+	NextStateLength   int      `json:"next_state_length"`
+	ObservationLength int      `json:"observation_length"`
+	NextObsLength     int      `json:"next_observation_length"`
+	MetadataKeys      []string `json:"metadata_keys,omitempty"`
+}
+
+func summarizeTransition(t *replayv1.Transition) *transitionSummary {
+	if t == nil {
+		return nil
+	}
+
+	return &transitionSummary{
+		ID:                t.GetId(),
+		EnvID:             t.GetEnvId(),
+		EpisodeID:         t.GetEpisodeId(),
+		StepNumber:        t.GetStepNumber(),
+		Reward:            t.GetReward(),
+		Done:              t.GetDone(),
+		Priority:          t.GetPriority(),
+		Timestamp:         t.GetTimestamp(),
+		StateLength:       len(t.GetState()),
+		ActionLength:      len(t.GetAction()),
+		NextStateLength:   len(t.GetNextState()),
+		ObservationLength: len(t.GetObservation()),
+		NextObsLength:     len(t.GetNextObservation()),
+		MetadataKeys:      sortedKeys(t.GetMetadata()),
+	}
+}
+
+func sampleTransitions(transitions []*replayv1.Transition, limit int) []*transitionSummary {
+	if limit <= 0 || len(transitions) == 0 {
+		return nil
+	}
+
+	count := limit
+	if len(transitions) < limit {
+		count = len(transitions)
+	}
+
+	sampled := make([]*transitionSummary, 0, count)
+	for i := 0; i < count; i++ {
+		sampled = append(sampled, summarizeTransition(transitions[i]))
+	}
+	return sampled
+}
+
+func sampleStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) <= limit {
+		return append([]string(nil), values...)
+	}
+	return append([]string(nil), values[:limit]...)
+}
+
+func sortedKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
