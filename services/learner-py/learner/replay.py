@@ -29,6 +29,18 @@ class SampleResponseLike(Protocol):
 def _tensor_from_bytes(blob: bytes, *, dtype: torch.dtype, field: str) -> torch.Tensor:
     if not blob:
         raise ValueError(f"Transition field '{field}' is empty")
+
+    element_size = torch.tensor([], dtype=dtype).element_size()
+    if element_size <= 0:
+        raise ValueError(f"Cannot determine element size for dtype {dtype} when decoding '{field}'")
+
+    if len(blob) % element_size != 0:
+        raise ValueError(
+            "Transition field '%s' contains %d bytes which is not a multiple of the %d-byte "
+            "elements required for dtype %s"
+            % (field, len(blob), element_size, dtype)
+        )
+
     # ``torch.frombuffer`` avoids intermediate copies; clone to own the memory afterwards.
     tensor = torch.frombuffer(memoryview(blob), dtype=dtype)  # type: ignore[arg-type]
     if tensor.numel() == 0:
@@ -97,7 +109,29 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
         observations.append(
             _tensor_from_bytes(transition.observation, dtype=torch.float32, field="observation")
         )
-        actions.append(_tensor_from_bytes(transition.action, dtype=torch.float32, field="action"))
+
+        try:
+            action_tensor = _tensor_from_bytes(
+                transition.action, dtype=torch.float32, field="action"
+            )
+        except ValueError as float_error:
+            try:
+                discrete_tensor = _tensor_from_bytes(
+                    transition.action, dtype=torch.uint8, field="action"
+                )
+            except ValueError as uint8_error:
+                _LOGGER.error(
+                    "Failed to decode action bytes as either float32 or uint8: %s", uint8_error
+                )
+                raise ValueError(
+                    "Transition action data is not compatible with float32 or uint8 encoding"
+                ) from float_error
+
+            action_tensor = discrete_tensor.to(dtype=torch.int64)
+        else:
+            action_tensor = action_tensor.to(dtype=torch.float32)
+
+        actions.append(action_tensor)
         rewards.append(float(transition.reward))
         dones.append(bool(transition.done))
         metadata = transition.metadata or {}

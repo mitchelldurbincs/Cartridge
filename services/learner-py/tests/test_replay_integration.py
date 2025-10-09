@@ -85,7 +85,7 @@ class TestReplayConversion:
         assert torch.allclose(batch.actions[0], torch.tensor([0.0]))
         assert batch.rewards[0].item() == 1.5
         assert batch.log_probs[0].item() == -0.5
-        assert batch.values[0].item() == 2.3
+        assert batch.values[0].item() == pytest.approx(2.3)
         assert batch.dones[0].item() is False
 
     def test_batch_conversion(self):
@@ -136,6 +136,27 @@ class TestReplayConversion:
         assert batch.log_probs[0].item() == pytest.approx(0.0)
         assert batch.values[0].item() == pytest.approx(0.0)
         assert "missing log-probability/value" in caplog.text
+
+    def test_uint8_actions_are_promoted_to_int64(self):
+        """Discrete actions encoded as bytes should be promoted to ``torch.int64`` tensors."""
+
+        obs_data = struct.pack('ff', 1.0, 2.0)
+        action_data = bytes([5])  # Encoded as uint8
+
+        transition = MockTransition(
+            observation=obs_data,
+            action=action_data,
+            reward=1.0,
+            done=False,
+            metadata={'log_prob': '-0.5', 'value': '2.3'}
+        )
+
+        response = MockSampleResponse([transition])
+        batch = sample_response_to_batch(response)
+
+        assert batch.actions.dtype == torch.int64
+        assert batch.actions.shape == (1, 1)
+        assert batch.actions[0, 0].item() == 5
 
 
 class TestReplayClientIntegration:
