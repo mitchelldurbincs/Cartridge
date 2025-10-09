@@ -148,7 +148,7 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
     # Validate and stack tensor fields with improved error handling
     try:
         obs_tensor = _stack_tensors(observations, field="observation").to(device="cpu")
-        action_tensor = _stack_tensors(actions, field="action").to(device="cpu")
+        action_tensor = _stack_tensors(actions, field="action").to(device="cpu", dtype=torch.long)
     except ValueError as e:
         _LOGGER.error("Failed to convert replay response to batch: %s", e)
         raise ValueError(f"Replay data conversion failed: {e}") from e

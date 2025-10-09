@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import torch
 from torch import nn
 from torch.optim import Adam
+import structlog
 
 from ..config import AlgorithmConfig, TrainingConfig
 from ..datamodel import AlgorithmUpdate, TransitionBatch
@@ -26,6 +28,22 @@ class PPOLearner(AlgorithmProtocol):
         ).to(self._device)
         self._optimizer = Adam(self._model.parameters(), lr=training.learning_rate)
         self._step = 0
+        self._logger = structlog.get_logger(__name__)
+
+        model_params = sum(p.numel() for p in self._model.parameters())
+        self._logger.info(
+            "PPO algorithm initialized",
+            device=str(self._device),
+            observation_dim=training.observation_dim,
+            action_dim=training.action_dim,
+            learning_rate=training.learning_rate,
+            model_parameters=model_params,
+            gamma=config.gamma,
+            gae_lambda=config.gae_lambda,
+            clip_ratio=config.clip_ratio,
+            entropy_coef=config.entropy_coef,
+            value_loss_coef=config.value_loss_coef
+        )
 
     def update(self, batch: TransitionBatch) -> AlgorithmUpdate:
         self._model.train()
@@ -36,15 +54,25 @@ class PPOLearner(AlgorithmProtocol):
         actions = batch.actions
         old_log_probs = batch.log_probs
 
+        batch_size = observations.size(0)
+        self._logger.debug(
+            "Starting PPO update",
+            step=self._step + 1,
+            batch_size=batch_size,
+            observation_shape=list(observations.shape),
+            action_shape=list(actions.shape)
+        )
+
         flat_obs = observations.view(-1, observations.shape[-1])
         flat_actions = actions.view(-1)
         flat_old_log_probs = old_log_probs.view(-1)
         flat_advantages = advantages.view(-1)
         flat_returns = returns.view(-1)
 
-        flat_advantages = (flat_advantages - flat_advantages.mean()) / (
-            flat_advantages.std(unbiased=False) + 1e-8
-        )
+        # Normalize advantages
+        adv_mean = flat_advantages.mean()
+        adv_std = flat_advantages.std(unbiased=False)
+        flat_advantages = (flat_advantages - adv_mean) / (adv_std + 1e-8)
 
         dist, values = self._model(flat_obs)
         log_probs = dist.log_prob(flat_actions)
@@ -64,12 +92,40 @@ class PPOLearner(AlgorithmProtocol):
             - self._config.entropy_coef * entropy
         )
 
+        # Check for numerical issues
+        if not torch.isfinite(loss):
+            self._logger.error(
+                "Non-finite loss detected",
+                step=self._step + 1,
+                loss=float(loss),
+                policy_loss=float(policy_loss),
+                value_loss=float(value_loss),
+                entropy=float(entropy)
+            )
+            raise ValueError(f"Non-finite loss: {loss}")
+
         self._optimizer.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self._model.parameters(), self._config.max_grad_norm)
-        self._optimizer.step()
 
+        # Log gradient norms before clipping
+        total_grad_norm = nn.utils.clip_grad_norm_(self._model.parameters(), self._config.max_grad_norm)
+
+        self._optimizer.step()
         self._step += 1
+
+        # Log detailed metrics every 100 steps
+        if self._step % 100 == 1:
+            self._logger.info(
+                "PPO training metrics",
+                step=self._step,
+                advantage_mean=float(adv_mean),
+                advantage_std=float(adv_std),
+                gradient_norm=float(total_grad_norm),
+                ratio_mean=float(ratio.mean()),
+                ratio_std=float(ratio.std()),
+                clipping_fraction=float((ratio != clipped_ratio).float().mean())
+            )
+
         return AlgorithmUpdate(
             step=self._step,
             loss=float(loss.detach().cpu().item()),

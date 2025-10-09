@@ -11,6 +11,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 import grpc
+import structlog
 from tenacity import (
     AsyncRetrying,
     RetryError,
@@ -50,7 +51,7 @@ class ReplayClient:
         self._metrics = metrics
         self._channel: grpc.aio.Channel | None = None
         self._stub = None
-        self._logger = logging.getLogger(__name__)
+        self._logger = structlog.get_logger(__name__)
 
     async def __aenter__(self) -> "ReplayClient":
         await self.start()
@@ -61,10 +62,18 @@ class ReplayClient:
 
     async def start(self) -> None:
         if self._prefetch_task is None:
+            self._logger.info(
+                "Starting replay client",
+                endpoint=self._config.endpoint,
+                batch_size=self._config.batch_size,
+                prefetch_depth=self._config.prefetch_depth,
+                tls_enabled=self._config.tls_enabled
+            )
             self._prefetch_task = asyncio.create_task(self._prefetch_loop())
 
     async def stop(self) -> None:
         if self._prefetch_task is not None:
+            self._logger.info("Stopping replay client prefetch loop")
             self._stopping.set()
             self._prefetch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -74,11 +83,19 @@ class ReplayClient:
 
         await self._close_channel()
 
+        # Clear any remaining items in the queue
+        queued_items = 0
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
+                queued_items += 1
             except asyncio.QueueEmpty:  # pragma: no cover - defensive
                 break
+
+        if queued_items > 0:
+            self._logger.debug("Cleared queued batches during shutdown", cleared_count=queued_items)
+
+        self._logger.info("Replay client stopped successfully")
 
     async def sample(self) -> TransitionBatch:
         """Return the next available batch, waiting for prefetch if necessary."""
@@ -103,6 +120,19 @@ class ReplayClient:
                         batch = await self._invoke_sampler()
                         await self._queue.put(batch)
                         consecutive_failures = 0  # Reset on success
+
+                        # Log successful prefetch occasionally
+                        if hasattr(batch, 'observations') and len(batch.observations) > 0:
+                            # Log every 50th successful prefetch
+                            if getattr(self, '_prefetch_success_count', 0) % 50 == 0:
+                                self._logger.debug(
+                                    "Prefetch successful",
+                                    batch_size=len(batch.observations),
+                                    queue_size=self._queue.qsize(),
+                                    prefetch_count=getattr(self, '_prefetch_success_count', 0) + 1
+                                )
+                            self._prefetch_success_count = getattr(self, '_prefetch_success_count', 0) + 1
+
                         break  # Break out of retry loop on success
 
             except (RetryError, RuntimeError) as exc:

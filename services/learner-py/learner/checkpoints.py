@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import structlog
 from safetensors.torch import save_file
 from torch import nn, optim
 
@@ -32,6 +34,14 @@ class CheckpointManager:
         self._base_path.mkdir(parents=True, exist_ok=True)
         self._manifests: list[CheckpointManifest] = []
         self._lock = asyncio.Lock()
+        self._logger = structlog.get_logger(__name__)
+
+        self._logger.info(
+            "CheckpointManager initialized",
+            base_path=str(self._base_path),
+            interval_steps=config.interval_steps,
+            keep_last=config.keep_last
+        )
 
     async def save(
         self,
@@ -41,17 +51,50 @@ class CheckpointManager:
         optimizer: optim.Optimizer,
         metadata: Mapping[str, Any] | None = None,
     ) -> CheckpointManifest:
+        self._logger.info("Starting checkpoint save", step=step, metadata=metadata)
+
         metadata = {str(key): str(value) for key, value in (metadata or {}).items()}
         checkpoint_dir = self._base_path / f"step_{step}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self._logger.debug("Created checkpoint directory", path=str(checkpoint_dir))
+
         tensors = {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
         }
-        tensor_path = checkpoint_dir / "weights.safetensors"
-        await asyncio.get_running_loop().run_in_executor(
-            None, save_file, tensors, str(tensor_path), metadata
+
+        model_params = sum(p.numel() for p in model.parameters())
+        self._logger.debug(
+            "Prepared model state for saving",
+            model_parameters=model_params,
+            tensors_count=len(tensors)
         )
+
+        tensor_path = checkpoint_dir / "weights.safetensors"
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, save_file, tensors, str(tensor_path), metadata
+            )
+
+            file_size = tensor_path.stat().st_size
+            self._logger.info(
+                "Saved checkpoint tensors",
+                step=step,
+                path=str(tensor_path),
+                file_size_mb=round(file_size / (1024 * 1024), 2)
+            )
+
+        except Exception as exc:
+            self._logger.error(
+                "Failed to save checkpoint tensors",
+                step=step,
+                path=str(tensor_path),
+                error=str(exc)
+            )
+            raise
+
         manifest_metadata = {**metadata, "optimizer": "adam", "artifact": tensor_path.name}
         manifest = CheckpointManifest(
             step=step,
@@ -62,16 +105,48 @@ class CheckpointManager:
         manifest_path = checkpoint_dir / "MANIFEST.json"
         manifest_path.write_text(json.dumps({"step": step, **manifest_metadata}, indent=2))
 
+        self._logger.debug("Created manifest file", path=str(manifest_path))
+
         async with self._lock:
             self._manifests.append(manifest)
             self._manifests.sort(key=lambda item: item.step, reverse=True)
             await self._trim_old_checkpoints()
+
+        self._logger.info(
+            "Checkpoint saved successfully",
+            step=step,
+            total_checkpoints=len(self._manifests),
+            latest_step=self._manifests[0].step if self._manifests else None
+        )
+
         return manifest
 
     async def _trim_old_checkpoints(self) -> None:
+        trimmed_count = 0
         while len(self._manifests) > self._config.keep_last:
             manifest = self._manifests.pop()
-            shutil.rmtree(manifest.path.parent, ignore_errors=True)
+            try:
+                shutil.rmtree(manifest.path.parent, ignore_errors=True)
+                trimmed_count += 1
+                self._logger.debug(
+                    "Removed old checkpoint",
+                    step=manifest.step,
+                    path=str(manifest.path.parent)
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "Failed to remove old checkpoint",
+                    step=manifest.step,
+                    path=str(manifest.path.parent),
+                    error=str(exc)
+                )
+
+        if trimmed_count > 0:
+            self._logger.info(
+                "Trimmed old checkpoints",
+                removed_count=trimmed_count,
+                remaining_count=len(self._manifests)
+            )
 
     @property
     def latest(self) -> CheckpointManifest | None:
