@@ -12,6 +12,10 @@ from .datamodel import TransitionBatch
 _LOG_PROB_KEY = "log_prob"
 _VALUE_KEY = "value"
 _LOGGER = logging.getLogger(__name__)
+_MISSING_METADATA_WARNED = False
+# ``log_prob``/``value`` metadata is emitted by newer actor builds. We keep a
+# module level flag so that older actors only generate a single warning instead
+# of spamming the learner logs on every batch.
 
 
 class TransitionLike(Protocol):
@@ -105,6 +109,9 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
     dones: list[bool] = []
     values: list[float] = []
 
+    missing_metadata = 0
+    example_keys: list[str] | None = None
+
     for transition in transitions:
         observations.append(
             _tensor_from_bytes(transition.observation, dtype=torch.float32, field="observation")
@@ -138,12 +145,26 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
         log_prob_str = metadata.get(_LOG_PROB_KEY)
         value_str = metadata.get(_VALUE_KEY)
         if log_prob_str is None or value_str is None:
-            _LOGGER.warning(
-                "Transition metadata missing log-probability/value; defaulting to zero (available keys: %s)",
-                sorted(metadata.keys()),
-            )
+            missing_metadata += 1
+            if example_keys is None:
+                example_keys = sorted(metadata.keys())
         log_probs.append(float(log_prob_str) if log_prob_str is not None else 0.0)
         values.append(float(value_str) if value_str is not None else 0.0)
+
+    if missing_metadata:
+        global _MISSING_METADATA_WARNED
+        if not _MISSING_METADATA_WARNED:
+            _LOGGER.warning(
+                "%d transitions missing log-probability/value metadata; defaulting to zero (example keys: %s)",
+                missing_metadata,
+                example_keys,
+            )
+            _MISSING_METADATA_WARNED = True
+        else:
+            _LOGGER.debug(
+                "Transitions missing log-probability/value metadata; defaulting to zero",
+                missing_transitions=missing_metadata,
+            )
 
     # Validate and stack tensor fields with improved error handling
     try:
