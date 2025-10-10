@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import structlog
+import torch
 from safetensors.torch import save_file
 from torch import nn, optim
 
@@ -59,28 +60,25 @@ class CheckpointManager:
 
         self._logger.debug("Created checkpoint directory", path=str(checkpoint_dir))
 
-        tensors = {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-        }
+        model_state = {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()}
 
         model_params = sum(p.numel() for p in model.parameters())
         self._logger.debug(
             "Prepared model state for saving",
             model_parameters=model_params,
-            tensors_count=len(tensors)
+            tensors_count=len(model_state)
         )
 
         tensor_path = checkpoint_dir / "weights.safetensors"
 
         try:
             await asyncio.get_running_loop().run_in_executor(
-                None, save_file, tensors, str(tensor_path), metadata
+                None, save_file, model_state, str(tensor_path), metadata
             )
 
             file_size = tensor_path.stat().st_size
             self._logger.info(
-                "Saved checkpoint tensors",
+                "Saved model weights",
                 step=step,
                 path=str(tensor_path),
                 file_size_mb=round(file_size / (1024 * 1024), 2)
@@ -88,14 +86,41 @@ class CheckpointManager:
 
         except Exception as exc:
             self._logger.error(
-                "Failed to save checkpoint tensors",
+                "Failed to save model weights",
                 step=step,
                 path=str(tensor_path),
                 error=str(exc)
             )
             raise
 
-        manifest_metadata = {**metadata, "optimizer": "adam", "artifact": tensor_path.name}
+        optimizer_path = checkpoint_dir / "optimizer.pt"
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, torch.save, optimizer.state_dict(), str(optimizer_path)
+            )
+            opt_file_size = optimizer_path.stat().st_size
+            self._logger.info(
+                "Saved optimizer state",
+                step=step,
+                path=str(optimizer_path),
+                file_size_mb=round(opt_file_size / (1024 * 1024), 2)
+            )
+        except Exception as exc:
+            self._logger.error(
+                "Failed to save optimizer state",
+                step=step,
+                path=str(optimizer_path),
+                error=str(exc)
+            )
+            raise
+
+        manifest_metadata = {
+            **metadata,
+            "optimizer": optimizer.__class__.__name__,
+            "weights_artifact": tensor_path.name,
+            "optimizer_artifact": optimizer_path.name,
+        }
         manifest = CheckpointManifest(
             step=step,
             path=tensor_path,
