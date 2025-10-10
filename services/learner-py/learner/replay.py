@@ -153,7 +153,7 @@ def sample_response_to_batch(response: SampleResponseLike) -> TransitionBatch:
         _LOGGER.error("Failed to convert replay response to batch: %s", e)
         raise ValueError(f"Replay data conversion failed: {e}") from e
 
-    # Create scalar tensors
+    # Create scalar tensors - these are 1D tensors representing individual transitions
     log_probs_tensor = torch.tensor(log_probs, dtype=torch.float32, device="cpu")
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device="cpu")
     dones_tensor = torch.tensor(dones, dtype=torch.bool, device="cpu")

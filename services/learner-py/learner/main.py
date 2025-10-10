@@ -61,12 +61,16 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
         _LOGGER.info("All service components initialized successfully")
 
         async def heartbeat(update: AlgorithmUpdate) -> None:
-            checkpoint_step = checkpoints.latest.step if checkpoints.latest else None
+            checkpoint_version = checkpoints.latest.step if checkpoints.latest else 0
             payload = HeartbeatPayload(
+                run_id=config.control.run_id,
+                status="running",
                 step=update.step,
-                policy_loss=update.policy_loss,
-                value_loss=update.value_loss,
-                checkpoint_step=checkpoint_step,
+                samples_per_sec=0.0,  # TODO: Calculate actual samples per second
+                loss=update.loss,
+                checkpoint_version=checkpoint_version,
+                queued_commands=None,
+                notes=None,
             )
             await control.send_heartbeat(payload)
 

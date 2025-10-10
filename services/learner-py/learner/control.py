@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import aiohttp
 import structlog
@@ -14,10 +14,14 @@ from .config import ControlConfig
 
 @dataclass(slots=True)
 class HeartbeatPayload:
+    run_id: str
+    status: str
     step: int
-    policy_loss: float
-    value_loss: float
-    checkpoint_step: int | None
+    samples_per_sec: float
+    loss: float
+    checkpoint_version: int
+    queued_commands: list[str] | None = None
+    notes: str | None = None
 
 
 class ControlClient:
@@ -50,7 +54,7 @@ class ControlClient:
         url = f"{self._config.orchestrator_endpoint}/runs/{self._config.run_id}/heartbeat"
 
         try:
-            async with session.post(url, json=payload.__dict__, timeout=10) as response:
+            async with session.post(url, json=asdict(payload), timeout=10) as response:
                 response.raise_for_status()
                 self._heartbeat_count += 1
 
@@ -58,11 +62,12 @@ class ControlClient:
                 if self._heartbeat_count % 10 == 1 or self._last_heartbeat_error is not None:
                     self._logger.info(
                         "Heartbeat sent successfully",
-                        run_id=self._config.run_id,
+                        run_id=payload.run_id,
                         step=payload.step,
-                        policy_loss=payload.policy_loss,
-                        value_loss=payload.value_loss,
-                        checkpoint_step=payload.checkpoint_step,
+                        status=payload.status,
+                        loss=payload.loss,
+                        samples_per_sec=payload.samples_per_sec,
+                        checkpoint_version=payload.checkpoint_version,
                         heartbeat_count=self._heartbeat_count,
                         status_code=response.status
                     )

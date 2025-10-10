@@ -28,6 +28,24 @@ func main() {
 	publisher := events.NoopPublisher{}
 	orch := service.NewOrchestrator(store, publisher, logger)
 
+	// Auto-create local-run for development
+	ctx := context.Background()
+	if _, err := orch.GetRun(ctx, "local-run"); err != nil {
+		input := service.CreateRunInput{
+			ID:             "local-run",
+			ExperimentID:   "local-experiment",
+			VersionID:      "v1",
+			LaunchManifest: []byte("{}"),
+			Priority:       1,
+			CreatedBy:      "local-setup",
+		}
+		if _, err := orch.CreateRun(ctx, input); err != nil {
+			logger.Error().Err(err).Msg("failed to create local-run")
+		} else {
+			logger.Info().Msg("created local-run for development")
+		}
+	}
+
 	h := httpServer.NewServer(orch, logger)
 	srv := &http.Server{
 		Addr:              addr,
