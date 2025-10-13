@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package cartridge.weights.v1;
+
+option go_package = "github.com/cartridge/weights/internal/pb;weightspb";
+
+import "google/protobuf/timestamp.proto";
+
+// WeightsService exposes APIs for publishing and consuming learner checkpoints.
+service WeightsService {
+  // PublishWeights promotes a new weight version for a run.
+  rpc PublishWeights(PublishWeightsRequest) returns (PublishWeightsResponse);
+
+  // StreamWeights streams subsequent versions for the requested run.
+  rpc StreamWeights(WatchRunRequest) returns (stream WeightsBlob);
+
+  // GetCurrent returns the latest published version for the run.
+  rpc GetCurrent(GetCurrentRequest) returns (WeightsBlob);
+}
+
+// PublishWeightsRequest carries learner output metadata.
+message PublishWeightsRequest {
+  string run_id = 1;
+  int64 step = 2;
+  string checksum = 3;
+  string artifact_uri = 4;
+  bytes inline_payload = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp published_at = 7;
+}
+
+// PublishWeightsResponse acknowledges a publication.
+message PublishWeightsResponse {
+  WeightsBlob version = 1;
+}
+
+// WatchRunRequest opens a stream for updates.
+message WatchRunRequest {
+  string run_id = 1;
+  bool replay_latest = 2;
+}
+
+// GetCurrentRequest fetches the latest version.
+message GetCurrentRequest {
+  string run_id = 1;
+}
+
+// WeightsBlob represents a published manifest.
+message WeightsBlob {
+  string run_id = 1;
+  int64 step = 2;
+  string checksum = 3;
+  string artifact_uri = 4;
+  bytes inline_payload = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp published_at = 7;
+}
