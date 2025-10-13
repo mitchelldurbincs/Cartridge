@@ -1,0 +1,1 @@
+Rethink through some of the configs - especially around the learner. Need to have a config somewhere where I can tweak learning rate and other things like that. 
