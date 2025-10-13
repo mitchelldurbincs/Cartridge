@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -24,6 +25,16 @@ class CheckpointManifest:
     path: Path
     checksum: str
     metadata: Mapping[str, Any]
+
+
+def _compute_file_sha256(path: Path) -> str:
+    """Compute the SHA256 checksum of a file."""
+
+    hash_obj = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            hash_obj.update(chunk)
+    return hash_obj.hexdigest()
 
 
 class CheckpointManager:
@@ -115,16 +126,28 @@ class CheckpointManager:
             )
             raise
 
+        loop = asyncio.get_running_loop()
+        weights_checksum = await loop.run_in_executor(
+            None, _compute_file_sha256, tensor_path
+        )
+
+        self._logger.debug(
+            "Computed weights checksum",
+            path=str(tensor_path),
+            checksum=weights_checksum,
+        )
+
         manifest_metadata = {
             **metadata,
             "optimizer": optimizer.__class__.__name__,
             "weights_artifact": tensor_path.name,
             "optimizer_artifact": optimizer_path.name,
+            "weights_checksum_sha256": weights_checksum,
         }
         manifest = CheckpointManifest(
             step=step,
             path=tensor_path,
-            checksum="",  # TODO: implement checksums once wiring with object store is added
+            checksum=weights_checksum,
             metadata=manifest_metadata,
         )
         manifest_path = checkpoint_dir / "MANIFEST.json"
