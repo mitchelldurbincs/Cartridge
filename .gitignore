@@ -208,6 +208,7 @@ temp/
 checkpoints/
 models/
 weights/
+!proto/weights/
 
 # Data files
 *.parquet

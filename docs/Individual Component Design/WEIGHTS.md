@@ -101,3 +101,15 @@ Expose an internal Redis publisher that mirrors WeightsBlob announcements onto t
 - Add run-scoped retention policies (e.g., keep N historical versions) to simplify rollbacks and evaluations.
 
 - Explore multi-run tenanting so a single service instance can safely broker weights for many concurrent experiments without interference.
+
+## Implementation status
+
+Initial scaffolding for the Go service lives under `services/weights-go/` and includes:
+
+- **Proto contract** – `proto/weights/weights.proto` defines `PublishWeights`, `StreamWeights`, and `GetCurrent` RPCs plus the `WeightsBlob` manifest, mirroring the learner's manifest fields.
+- **Registry + fan-out** – `internal/registry` provides an in-memory store with bounded history and per-run subscriptions that back both unary and streaming reads.
+- **Core service logic** – `internal/service` validates publish inputs, records versions, and exposes streaming helpers that the forthcoming gRPC handlers will wrap.
+- **Configuration** – `internal/config` reads environment variables for listener settings, registry backend selection, Redis mirroring, and compatibility toggles.
+- **Executable skeleton** – `cmd/server/main.go` wires config, logging, and the in-memory registry while we finish integrating the gRPC surface.
+
+Remaining work before productionizing includes generating gRPC stubs from the proto, wiring the server, persisting metadata beyond memory (e.g., Redis/Postgres), and implementing the Redis compatibility bridge described above.
