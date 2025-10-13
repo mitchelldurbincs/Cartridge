@@ -102,6 +102,17 @@ class ReplayClient:
 
         return await self._queue.get()
 
+    def queue_metrics(self) -> tuple[int | None, int | None]:
+        """Return current depth and capacity for the prefetch queue."""
+
+        try:
+            depth = self._queue.qsize()
+        except NotImplementedError:  # pragma: no cover - implementation detail on some loops
+            depth = None
+
+        capacity = self._queue.maxsize if self._queue.maxsize > 0 else None
+        return depth, capacity
+
     async def _prefetch_loop(self) -> None:
         """Background prefetch loop with enhanced error handling."""
         consecutive_failures = 0

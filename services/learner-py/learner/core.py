@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import structlog
@@ -18,6 +19,19 @@ from .weights import WeightPayload, WeightPublisher
 from .checkpoints import CheckpointManager
 
 
+@dataclass(slots=True)
+class LoopStatistics:
+    """Lightweight snapshot of runtime telemetry for a learner step."""
+
+    step: int
+    loop_duration_s: float
+    samples_per_sec: float
+    batch_size: int
+    replay_queue_depth: int | None
+    replay_queue_capacity: int | None
+    outstanding_command_ids: list[str]
+
+
 class LearnerCore:
     """Coordinates the end-to-end training workflow."""
 
@@ -29,7 +43,7 @@ class LearnerCore:
         weights: WeightPublisher,
         metrics: MetricsRegistry,
         *,
-        heartbeat_callback: Callable[[AlgorithmUpdate], Awaitable[None]] | None = None,
+        heartbeat_callback: Callable[[AlgorithmUpdate, LoopStatistics], Awaitable[None]] | None = None,
     ) -> None:
         self._config = config
         self._replay_client = replay_client
@@ -43,6 +57,8 @@ class LearnerCore:
         self._logger = structlog.get_logger(__name__)
         self._step_count = 0
         self._last_log_time = time.time()
+        self._latest_stats: LoopStatistics | None = None
+        self._pending_command_ids: list[str] = []
 
     async def run(self) -> None:
         self._logger.info("Starting training loop", algorithm=self._config.algorithm.name,
@@ -58,14 +74,28 @@ class LearnerCore:
                     update = self._algorithm.update(batch)
                     self._record_update(update)
 
+                    loop_duration = time.time() - loop_start
+                    batch_size = self._infer_batch_size(batch)
+                    samples_per_sec = self._calculate_samples_per_sec(batch_size, loop_duration)
+                    queue_depth, queue_capacity = self._replay_client.queue_metrics()
+
+                    self._latest_stats = LoopStatistics(
+                        step=update.step,
+                        loop_duration_s=loop_duration,
+                        samples_per_sec=samples_per_sec,
+                        batch_size=batch_size,
+                        replay_queue_depth=queue_depth,
+                        replay_queue_capacity=queue_capacity,
+                        outstanding_command_ids=list(self._pending_command_ids),
+                    )
+
                     await self._maybe_checkpoint(update)
                     await self._maybe_publish_weights(update)
 
                     if self._heartbeat_callback is not None:
-                        await self._heartbeat_callback(update)
+                        await self._heartbeat_callback(update, self._latest_stats)
 
                     self._step_count += 1
-                    loop_duration = time.time() - loop_start
 
                     # Log progress every 10 steps or every 30 seconds
                     current_time = time.time()
@@ -78,6 +108,9 @@ class LearnerCore:
                             entropy=update.entropy,
                             total_loss=update.loss,
                             loop_duration_ms=round(loop_duration * 1000, 2),
+                            samples_per_sec=round(samples_per_sec, 2),
+                            replay_queue_depth=queue_depth,
+                            replay_queue_capacity=queue_capacity,
                             steps_processed=self._step_count
                         )
                         self._last_log_time = current_time
@@ -161,5 +194,33 @@ class LearnerCore:
         # Already handled inside checkpoint logic for the MVP cadence.
         return
 
+    def _infer_batch_size(self, batch: TransitionBatch) -> int:
+        """Best-effort determination of the processed batch size."""
 
-__all__ = ["LearnerCore"]
+        try:
+            size = int(batch.observations.shape[0])  # type: ignore[attr-defined]
+            if size > 0:
+                return size
+        except Exception:  # pragma: no cover - defensive against unknown tensor shapes
+            self._logger.debug("Failed to infer batch size from observations", exc_info=True)
+        return self._config.replay.batch_size
+
+    @staticmethod
+    def _calculate_samples_per_sec(batch_size: int, loop_duration: float) -> float:
+        if loop_duration <= 0:
+            return 0.0
+        return batch_size / loop_duration
+
+    @property
+    def latest_stats(self) -> LoopStatistics | None:
+        """Return telemetry from the most recent optimisation step."""
+
+        return self._latest_stats
+
+    def update_pending_commands(self, command_ids: list[str]) -> None:
+        """Replace the tracked outstanding command identifiers."""
+
+        self._pending_command_ids = list(command_ids)
+
+
+__all__ = ["LearnerCore", "LoopStatistics"]

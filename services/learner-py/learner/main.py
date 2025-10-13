@@ -15,7 +15,7 @@ from .checkpoints import CheckpointManager
 from .datamodel import AlgorithmUpdate
 from .config import load_config, parse_args
 from .control import ControlClient, HeartbeatPayload
-from .core import LearnerCore
+from .core import LearnerCore, LoopStatistics
 from .metrics import MetricsRegistry
 from .replay_client import ReplayClient
 from .utils.logging import configure_logging
@@ -60,17 +60,27 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
         replay = ReplayClient(config.replay, metrics=metrics)
         _LOGGER.info("All service components initialized successfully")
 
-        async def heartbeat(update: AlgorithmUpdate) -> None:
+        async def heartbeat(update: AlgorithmUpdate, stats: LoopStatistics) -> None:
             checkpoint_version = checkpoints.latest.step if checkpoints.latest else 0
+            queue_depth = stats.replay_queue_depth
+            queue_capacity = stats.replay_queue_capacity
+            notes_parts = [
+                f"loop_duration_s={stats.loop_duration_s:.4f}",
+                f"batch_size={stats.batch_size}",
+            ]
+            if queue_depth is not None:
+                notes_parts.append(
+                    f"prefetch_queue={queue_depth}/{queue_capacity if queue_capacity is not None else 'unknown'}"
+                )
             payload = HeartbeatPayload(
                 run_id=config.control.run_id,
                 status="running",
                 step=update.step,
-                samples_per_sec=0.0,  # TODO: Calculate actual samples per second
+                samples_per_sec=stats.samples_per_sec,
                 loss=update.loss,
                 checkpoint_version=checkpoint_version,
-                queued_commands=None,
-                notes=None,
+                queued_commands=stats.outstanding_command_ids,
+                notes=";".join(notes_parts),
             )
             await control.send_heartbeat(payload)
 
