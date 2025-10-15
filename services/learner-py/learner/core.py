@@ -67,6 +67,7 @@ class LearnerCore:
 
         async with self._replay_client:
             while not self._stopping.is_set():
+                update: AlgorithmUpdate | None = None
                 try:
                     loop_start = time.time()
 
@@ -115,9 +116,14 @@ class LearnerCore:
                         )
                         self._last_log_time = current_time
 
-                except Exception as exc:
-                    self._logger.error("Error in training loop", error=str(exc), step=getattr(update, 'step', 'unknown') if 'update' in locals() else 'unknown')
-                    raise
+                except ValueError as exc:
+                    step = update.step if update is not None else "unknown"
+                    self._logger.warning(
+                        "Recoverable error in training loop",
+                        error=str(exc),
+                        step=step,
+                    )
+                    continue
 
     async def stop(self) -> None:
         self._logger.info("Stopping training loop", total_steps_processed=self._step_count)
