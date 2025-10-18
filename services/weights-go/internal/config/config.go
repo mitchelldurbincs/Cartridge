@@ -13,6 +13,7 @@ type Config struct {
 	Registry      RegistryConfig
 	Redis         RedisConfig
 	Compatibility CompatibilityConfig
+	Observability ObservabilityConfig
 }
 
 // ServerConfig contains gRPC listener settings.
@@ -31,14 +32,23 @@ type RegistryConfig struct {
 
 // RedisConfig configures the optional Redis compatibility publisher.
 type RedisConfig struct {
-	Enabled bool
-	Address string
-	Channel string
+	Enabled  bool
+	Address  string
+	Channel  string
+	Password string
+	Database int
+	Timeout  time.Duration
 }
 
 // CompatibilityConfig toggles backward compatibility features.
 type CompatibilityConfig struct {
 	MirrorToRedis bool
+}
+
+// ObservabilityConfig captures metrics and tracing settings.
+type ObservabilityConfig struct {
+	MetricsAddress string
+	TracingEnabled bool
 }
 
 // Load reads configuration from the process environment.
@@ -55,12 +65,19 @@ func Load() Config {
 			HistoryDepth:   getEnvInt("WEIGHTS_HISTORY_DEPTH", 2),
 		},
 		Redis: RedisConfig{
-			Enabled: getEnvBool("WEIGHTS_REDIS_ENABLED", false),
-			Address: getEnvString("WEIGHTS_REDIS_ADDRESS", "127.0.0.1:6379"),
-			Channel: getEnvString("WEIGHTS_REDIS_CHANNEL", "weights:updates"),
+			Enabled:  getEnvBool("WEIGHTS_REDIS_ENABLED", false),
+			Address:  getEnvString("WEIGHTS_REDIS_ADDRESS", "127.0.0.1:6379"),
+			Channel:  getEnvString("WEIGHTS_REDIS_CHANNEL", "weights:updates"),
+			Password: os.Getenv("WEIGHTS_REDIS_PASSWORD"),
+			Database: getEnvInt("WEIGHTS_REDIS_DB", 0),
+			Timeout:  getEnvDuration("WEIGHTS_REDIS_TIMEOUT", 2*time.Second),
 		},
 		Compatibility: CompatibilityConfig{
 			MirrorToRedis: getEnvBool("WEIGHTS_MIRROR_REDIS", true),
+		},
+		Observability: ObservabilityConfig{
+			MetricsAddress: getEnvString("WEIGHTS_METRICS_ADDRESS", ":9094"),
+			TracingEnabled: getEnvBool("WEIGHTS_TRACING_ENABLED", false),
 		},
 	}
 
