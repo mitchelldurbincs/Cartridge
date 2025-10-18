@@ -1,171 +1,94 @@
 # Learner Service (Python)
 
 ## Overview
-The learner service consumes experience from the replay buffer, performs policy/value updates with PyTorch, and exports fresh weights and checkpoints on a fixed cadence. It is written in modern, type-annotated Python (3.11) and organised into clearly testable modules so we can iterate on algorithms without touching infrastructure plumbing. The process is intentionally single-tenanted per run: each learner instance owns a single experiment configuration, streams batches from replay, produces metrics, and emits artifacts to object storage for the dashboard and orchestrator.
+- Coordinates policy optimisation using PyTorch PPO, sourcing experience from replay, persisting checkpoints locally, publishing new weights through Redis, and emitting heartbeats to the orchestrator.【F:services/learner-py/learner/main.py†L35-L114】【F:services/learner-py/learner/core.py†L35-L202】
+- Built as a single-tenant process: every learner instance owns one configuration bundle (run id, algorithm hyperparameters, endpoints) parsed via Pydantic with CLI overrides for quick tuning.【F:services/learner-py/learner/config.py†L14-L167】
+- Runs entirely asynchronously on top of `asyncio`, with background prefetch of replay batches and cooperative shutdown that closes long-lived sockets cleanly.【F:services/learner-py/learner/replay_client.py†L36-L173】【F:services/learner-py/learner/main.py†L109-L120】
 
-## Responsibilities & scope
-- **Policy optimisation**: implement PPO first, but keep an interface that supports swapping algorithms (e.g. IMPALA, DQN) later.
-- **Replay integration**: maintain a gRPC streaming client that keeps a rolling window of sampled transitions ready for SGD.
-- **Checkpoint lifecycle**: materialise model/optimizer RNG state to MinIO/GCS and surface manifests so actors and evaluators can fetch versions.
-- **Weights distribution**: push the latest weights to the weight-publisher service (or directly expose a `/weights/current` endpoint in MVP) so actors can refresh policies.
-- **Run control**: consume tune/pause/resume commands from the orchestrator, apply bounded hyperparameter adjustments, and report heartbeats.
-- **Observability**: emit Prometheus metrics, structured logs, and OTLP traces for sampling latency, step time, loss scalars, and checkpoint timings.
+## Responsibilities & Scope
+- **Sampling**: maintain a resilient gRPC connection to replay, prefetching batches into an `asyncio.Queue` with exponential backoff and failure thresholds.【F:services/learner-py/learner/replay_client.py†L36-L169】
+- **Optimisation**: execute PPO updates against the sampled batches, including GAE calculation, gradient clipping, loss logging, and device placement control.【F:services/learner-py/learner/algo/ppo.py†L18-L177】
+- **Checkpointing & weights**: write `.safetensors` checkpoints plus manifests to a configured filesystem path, keep the most recent N, and publish weight metadata to Redis subscribers as part of the checkpoint cadence.【F:services/learner-py/learner/checkpoints.py†L40-L200】【F:services/learner-py/learner/weights.py†L23-L107】
+- **Control plane**: send structured heartbeat payloads to the orchestrator; command ingestion (pause/tune) is not yet implemented and pending future work.【F:services/learner-py/learner/control.py†L27-L174】
+- **Observability**: expose Prometheus metrics on port 9001, structured JSON logs via `structlog`, and queue depth telemetry for replay health checks.【F:services/learner-py/learner/metrics.py†L12-L45】【F:services/learner-py/learner/replay_client.py†L105-L115】【F:services/learner-py/learner/utils/logging.py†L11-L46】
 
-Out of scope for the first milestone: multi-run scheduling, distributed data-parallel training, and advanced prioritised replay beyond what `replay-go` already offers.
+Out of scope for the current implementation: multi-run scheduling, distributed data-parallel training, adaptive hyperparameter tuning, and alternative weight distribution backends.
 
-## Process architecture
+## Component Architecture
 ```
-┌──────────────────────────────────────────────────────────┐
-│                 learner (per experiment run)             │
-│                                                          │
-│  ┌───────────┐    ┌─────────────┐    ┌────────────────┐  │
-│  │Config/CLI │──► │ReplayClient │──► │BatchPrefetcher │──┼──┐
-│  └───────────┘    └─────────────┘    └────────────────┘  │  │
-│                                 │                         │  │ samples
-│                                 ▼                         │  │ (async)
-│                        ┌────────────────┐                 │  │
-│                        │LearnerCore     │◄──┐             │  │
-│                        │(algo loop)     │   │ gradients    │  │
-│                        └────────────────┘   │             │  │
-│                                 │            │             │  │
-│        metrics/checkpoints      ▼            │             │  │
-│  ┌──────────────┐    ┌────────────────┐      │             │  │
-│  │Metrics/Trace │◄── │CheckpointMgr   │◄─────┘             │  │
-│  └──────────────┘    └────────────────┘                    │  │
-│                                   │ weights               │  │
-│                                   ▼                       │  │
-│                            ┌────────────┐                 │  │
-│                            │WeightSink  │─────────────────┘  │
-│                            └────────────┘                    │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        learner/main.py                       │
+│                                                              │
+│  parse_args + load_config  ──►  configure_logging            │
+│             │                                    │           │
+│             ▼                                    ▼           │
+│  ReplayClient ──▶ asyncio prefetch queue ──▶ LearnerCore ──▶ MetricsRegistry │
+│             │                                    │    │      │
+│             │                                    │    └────► WeightPublisher (Redis) │
+│             │                                    │
+│             │                                    └───► CheckpointManager (fs) │
+│             │                                                    │           │
+│             └───────────────────────────────────────────────► ControlClient │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Config/CLI**: parses experiment config (from orchestrator or file) using Pydantic, validates hyperparameter bounds, and seeds RNGs.
-- **ReplayClient**: wraps the `replay.v1` gRPC stub with retry/backoff, translating `SampleResponse` messages into typed tensors.
-- **BatchPrefetcher**: runs in an asyncio Task, keeping N batches buffered (e.g., a bounded `asyncio.Queue`) so the training loop never stalls on network latency.
-- **LearnerCore**: houses the algorithm implementation (initially PPO) with pluggable model/backbone registries.
-- **CheckpointMgr**: serialises state dicts to `.safetensors` + JSON manifests, uploads to object storage, and records versions in Postgres via orchestrator API if needed.
-- **WeightSink**: publishes the latest policy weights (and optional value net) to the weight distribution channel.
+- **ReplayClient**: wraps the `replay.v1` stub, maintaining a bounded queue (`prefetch_depth`) of decoded `TransitionBatch` objects. Failures are retried with Tenacity; too many consecutive errors stop the learner to surface incidents quickly.【F:services/learner-py/learner/replay_client.py†L36-L169】
+- **LearnerCore**: pulls from the queue, runs PPO updates, updates metrics, triggers checkpoints/weight publishes, and pushes heartbeat telemetry through a callback supplied by `main.py`.【F:services/learner-py/learner/core.py†L63-L202】
+- **CheckpointManager** / **WeightPublisher**: persist artifacts to disk under `CheckpointConfig.bucket` and publish checkpoint metadata (`step`, `checksum`, URI) to Redis subscribers; old checkpoints are trimmed asynchronously to honour `keep_last`.【F:services/learner-py/learner/checkpoints.py†L43-L171】【F:services/learner-py/learner/weights.py†L23-L107】
+- **ControlClient**: maintains a single shared `aiohttp` session and posts heartbeats (`/runs/{run_id}/heartbeat`) with loop statistics and checkpoint counters.【F:services/learner-py/learner/control.py†L27-L140】
+- **MetricsRegistry**: launches a Prometheus HTTP exporter in a background task when the training loop starts, exposing counters/gauges/histograms for sampling, SGD steps, and checkpoint/write operations.【F:services/learner-py/learner/metrics.py†L12-L38】
 
-## Startup and control flow
-1. **Initialisation**
-   - Parse CLI flags / env vars for config URI, run ID, output bucket, replay endpoint, and weights endpoint.
-   - Fetch experiment config from orchestrator REST (`/runs/{id}`) or local file. Validate using schema to enforce safe ranges.
-   - Seed Python, NumPy, and torch RNGs using the orchestrator-provided seed base so runs are reproducible.
-   - Build the model architecture from config (policy + value nets), instantiate optimizer (Adam), and load initial weights (fresh init or resume from latest checkpoint).
+## Startup & Lifecycle
+1. **Argument parsing & overrides** – `parse_args` requires a config path and captures optional `key=value` overrides (dot-path syntax).【F:services/learner-py/learner/config.py†L96-L108】
+2. **Configuration loading** – `load_config` reads YAML/JSON, applies overrides, and validates against `LearnerConfig`, enforcing PPO-only algorithms and a `minibatch_size ≤ rollout_size` constraint.【F:services/learner-py/learner/config.py†L14-L167】
+3. **Logging & seeding** – `configure_logging` enables structured JSON output and honours `LOG_LEVEL`; `_seed_everything` seeds `random`, NumPy, CPU and (optional) CUDA RNGs for reproducibility.【F:services/learner-py/learner/utils/logging.py†L11-L46】【F:services/learner-py/learner/main.py†L27-L52】
+4. **Component wiring** – instantiate metrics, weight publisher, checkpoint manager, control client, and replay client. A heartbeat callback is bound to the learner to report progress after each update.【F:services/learner-py/learner/main.py†L54-L95】
+5. **Training loop** – `LearnerCore.run()` owns the async context of the replay client, performs PPO updates until `shutdown` is requested, emits metrics/logs, checkpoints, weight publishes, and heartbeats.【F:services/learner-py/learner/core.py†L63-L188】
+6. **Shutdown** – on cancellation or error, `main.py` stops the learner, closes the control client session, drains replay prefetch queues, and closes Redis connections.【F:services/learner-py/learner/main.py†L99-L120】【F:services/learner-py/learner/replay_client.py†L74-L104】【F:services/learner-py/learner/weights.py†L99-L107】
 
-2. **Connections**
-   - Dial `replay-go` via gRPC, using TLS in prod and plaintext locally. Warm up the sample stream with `SampleRequest` matching the engine capabilities (action/state sizes).
-   - Register with the weight publisher (if present) and publish the starting weights version (e.g., `step=0`).
-   - Kick off periodic heartbeats to orchestrator (`/runs/{id}/heartbeat`) with learner status (step count, last loss, checkpoint version).
+## Replay Integration
+- Sample requests are executed via the async gRPC stub (`ReplayStub.Sample`) with retries capped at three attempts per call and a global limit of ten consecutive failures before aborting the learner.【F:services/learner-py/learner/replay_client.py†L116-L169】
+- Responses are converted to tensors in `sample_response_to_batch`, supporting both float32 and discrete (uint8) action encodings and defaulting log-prob/value metadata to zero when missing (for legacy actors).【F:services/learner-py/learner/replay.py†L98-L195】
+- Queue depth / capacity is surfaced for diagnostics and included in heartbeat notes so operators can spot starvation quickly.【F:services/learner-py/learner/replay_client.py†L105-L115】【F:services/learner-py/learner/main.py†L63-L85】
 
-3. **Training loop**
-   - `BatchPrefetcher` continuously calls `Replay.Sample` with `batch_size = rollout_len * num_envs`, applying prioritised sampling parameters when enabled.
-   - `LearnerCore` dequeues a batch, parses byte payloads into tensors using engine encoding metadata (float32 observations, discrete actions), and constructs advantages/targets.
-   - Compute PPO losses (policy, value, entropy) across multiple minibatches/epochs per rollout, backpropagate, and step the optimizer.
-   - Update running metrics (reward estimates, KL divergence) and emit them through Prometheus Gauges/Summaries.
-   - Every K SGD updates (or wall-clock interval), trigger `CheckpointMgr.save(step, metrics)` which:
-        1. Exports `policy.safetensors`, `value.safetensors`, optimizer state, RNG seed snapshot.
-        2. Compresses shards with `zstd` if configured.
-        3. Uploads to MinIO/GCS with retries and verifies checksum.
-        4. Writes a `MANIFEST.json` containing URIs, versions, and metadata for the UI.
-   - After each optimizer step or on a configurable throttle, push the latest weights to `WeightSink` so actors can refresh (e.g., send `WeightsBlob{version, payload_uri}` via gRPC or Redis pub-sub).
+## Training Loop & Algorithm
+- The algorithm registry currently exposes a single implementation: PPO backed by `ActorCriticNetwork`, stochastic categorical policies, Adam optimisation, advantage normalisation, and gradient clipping.【F:services/learner-py/learner/algo/__init__.py†L1-L17】【F:services/learner-py/learner/algo/ppo.py†L18-L177】
+- Advantages/returns are provided either by the actors or computed on the fly using the shared `compute_gae` helper; bootstrapping tolerates batches that omit the final value prediction.【F:services/learner-py/learner/algo/ppo.py†L145-L172】【F:services/learner-py/learner/utils/math.py†L18-L76】
+- `LearnerCore` records loss scalars to Prometheus, computes throughput (samples/sec), and logs progress every ten steps or thirty seconds to avoid log spam.【F:services/learner-py/learner/core.py†L63-L155】
 
-4. **Run control**
-   - Respond to orchestrator tune commands: apply validated changes (e.g., adjust learning rate, entropy coef) without restarting the process. Changes are logged and recorded in metrics.
-   - Support `pause`: drain outstanding optimizer steps, stop sampling, and wait until `resume` arrives (keeping heartbeats alive). `terminate` gracefully flushes metrics and exits after final checkpoint.
+## Checkpoints & Weight Publishing
+- Checkpoints are stored beneath `<bucket>/step_<N>/`, containing `weights.safetensors`, `optimizer.pt`, and a JSON manifest with metadata and SHA256 checksums; older checkpoints beyond `keep_last` are removed in FIFO order.【F:services/learner-py/learner/checkpoints.py†L43-L198】
+- Weight publishes piggyback on checkpoint completion: the learner sends `{step, checksum, uri}` JSON messages to a Redis channel. Redis is the only backend wired today; other transports will need new handlers in `WeightPublisher`’s switch.【F:services/learner-py/learner/weights.py†L23-L98】
 
-## Module layout
-```
-services/learner-py/
-├── pyproject.toml        # poetry project metadata, dependencies (torch, grpcio, pydantic, prometheus-client, aiohttp)
-├── learner/
-│   ├── __init__.py
-│   ├── config.py          # dataclasses/pydantic models, CLI parsing
-│   ├── main.py            # entrypoint, wiring
-│   ├── replay_client.py   # async gRPC client & prefetch queue
-│   ├── datamodel.py       # tensor conversion helpers, capability parsing
-│   ├── algo/
-│   │   ├── __init__.py
-│   │   ├── registry.py    # maps algo names → factory (PPO default)
-│   │   ├── ppo.py         # PPO implementation (actor-critic)
-│   │   └── networks.py    # policy/value modules, weight init utilities
-│   ├── weights.py         # publishing to weight service / redis
-│   ├── checkpoints.py     # save/load logic, manifest management
-│   ├── control.py         # orchestrator client, heartbeat + tune listener
-│   ├── metrics.py         # prometheus exporters, tracing setup
-│   └── utils/
-│       ├── logging.py
-│       └── math.py        # GAE, normalization helpers
-└── tests/
-    ├── test_config.py
-    ├── test_replay_client.py
-    ├── test_ppo.py
-    ├── test_checkpoints.py
-    └── fixtures.py        # fake replay server, temp MinIO stub
-```
-
-## Replay integration details
-- Use the generated Python stubs from `proto/replay/v1/replay.proto` (built via `poetry run make proto`).
-- Sampling strategy:
-  - Maintain `prefetch_depth` (e.g., 4 batches). Each prefetch Task issues a `Sample` request and pushes results to the queue.
-  - If prioritized sampling is enabled, track TD-error estimates from learner updates and call `UpdatePriorities` asynchronously.
-- Deserialisation:
-  - Observations are decoded based on engine encoding metadata (supplied via run config from orchestrator). Provide helpers to convert `bytes` → `torch.Tensor` without extra copies when possible (use `torch.frombuffer`).
-  - Maintain alignment with actor encodings: discrete actions stored as little-endian integers, continuous as packed `f32`.
-- Backpressure: if the training loop falls behind, the queue blocks and naturally limits outstanding gRPC calls. We also expose metrics (`replay_sample_latency_seconds`, `prefetch_queue_size`).
-- Failure handling: implement exponential backoff with jitter for gRPC errors; after repeated failures, escalate via orchestrator heartbeat status.
-
-## Weight distribution
-- MVP: write weights to MinIO (`runs/<run_id>/weights/latest.pt`) and publish version metadata to Redis (`weights:<exp_id>`). Actors poll Redis to detect updates and fetch from MinIO.
-- Later: integrate with dedicated weight service (Go) via gRPC `PublishWeights` that streams binary payloads to connected actors, enabling push-based refresh.
-- Always sign weights with `(run_id, step, sha256)` in manifest so actors can verify integrity before loading.
-
-## Checkpoint strategy
-- Store every N environment steps or M minutes (configurable). Keep last `keep_n` checkpoints and a rolling `best` (based on eval reward if available).
-- Use `safetensors` for deterministic serialization and to avoid Python pickle security risks. Combine with `.json` manifest describing tensor shapes, dtype, and config snapshot.
-- Support resume: on startup, check object store for `latest` symlink (JSON file pointing to most recent checkpoint), download shards concurrently, and load state dict.
-- Include replay cursor metadata (last sampled transition IDs) to detect training gaps after restarts.
+## Control Plane Integration
+- Heartbeats carry the latest optimisation step, aggregate loss, samples/sec, checkpoint version, outstanding command ids (placeholder for future command handling), and queue depth context strings. Timeouts or HTTP failures bubble up so the orchestrator can treat them as degraded runs.【F:services/learner-py/learner/control.py†L74-L174】
+- Command ingestion (pause/resume/tune) and orchestrator-driven overrides are not implemented yet; `LearnerCore.update_pending_commands` exists as a stub for future integration.【F:services/learner-py/learner/core.py†L226-L229】
 
 ## Observability
-- **Metrics** (Prometheus):
-  - `learner_samples_total{status}`
-  - `learner_sample_latency_seconds`
-  - `learner_sgd_steps_total`
-  - `learner_policy_loss`, `learner_value_loss`, `learner_entropy`
-  - `learner_checkpoint_duration_seconds`
-  - `learner_weights_publish_total`
-- **Tracing**: wrap sampling and optimizer steps in `tracing` spans via `opentelemetry-sdk`, exporting to Tempo/Jaeger.
-- **Logging**: structured JSON logs via `structlog`, enriched with run/experiment IDs, step numbers, and config hashes.
+- **Metrics (Prometheus)**: `learner_samples_total{status}`, `learner_sample_latency_seconds`, `learner_sgd_steps_total`, `learner_policy_loss`, `learner_value_loss`, `learner_entropy`, `learner_checkpoint_duration_seconds`, `learner_weights_publish_total`. The exporter binds to TCP port `9001` by default.【F:services/learner-py/learner/metrics.py†L12-L38】
+- **Logging**: JSON-formatted, structured via `structlog`, seeded with ISO timestamps and enriched with run-level metadata; log level is configurable through `LOG_LEVEL`.【F:services/learner-py/learner/utils/logging.py†L11-L46】【F:services/learner-py/learner/main.py†L39-L52】
+- **Telemetry surfaces**: heartbeats expose replay queue utilisation, checkpoint cadence, and outstanding commands for dashboards; warnings fire for slow batch fetches or missing actor metadata.【F:services/learner-py/learner/core.py†L135-L147】【F:services/learner-py/learner/replay.py†L154-L167】
 
-## Configuration surface
-- CLI flags for endpoints (`--replay`, `--weights`, `--orchestrator`), object store bucket, run ID, log level.
-- Config file (YAML/JSON) or orchestrator payload specifying algorithm hyperparameters, batching (rollout length, minibatch size, epochs), gradient clipping, learning rate schedule, entropy coefficient, value loss coef.
-- Safety rails: enforce min/max values (from docs) and fail fast on invalid combos (e.g., minibatch size > rollout size).
+## Configuration Surface
+- `ReplayConfig`: endpoint, TLS toggle, prefetch depth, batch size—controls prefetch queue size and gRPC target.【F:services/learner-py/learner/config.py†L14-L20】
+- `TrainingConfig`: rollout size, learning rate, deterministic seed, device string, observation/action dimensions (provided by the orchestrator or experiment spec).【F:services/learner-py/learner/config.py†L36-L44】
+- `AlgorithmConfig`: PPO hyperparameters, validated to match the shipped implementation (alternate algorithms rejected).【F:services/learner-py/learner/config.py†L23-L34】【F:services/learner-py/learner/config.py†L79-L92】
+- `CheckpointConfig`: filesystem bucket (path), interval in steps, retention count.【F:services/learner-py/learner/config.py†L47-L52】
+- `WeightPublisherConfig`: backend identifier, Redis endpoint, channel name.【F:services/learner-py/learner/config.py†L55-L60】
+- `ControlConfig`: orchestrator HTTP endpoint, run id, heartbeat cadence.【F:services/learner-py/learner/config.py†L63-L66】
+- Command-line overrides mutate nested keys via dot notation (`training.learning_rate=1e-4`) before validation.【F:services/learner-py/learner/config.py†L111-L153】
 
-## Failure modes & mitigations
-- **Replay unavailable**: prefetcher backs off; learner reports degraded status. After threshold, pause optimizer and wait.
-- **Object storage outage**: checkpoint uploads retried with exponential backoff; if still failing, mark run as `checkpoint_stalled` via orchestrator while continuing training (configurable).
-- **Weights publish failure**: retain local copy and retry; actors continue using last known version.
-- **OOM / NaN**: gradient nan detection triggers automatic LR reduction and optional rollback to previous checkpoint.
-- **Process crash**: systemd/Kubernetes restarts container; resume from latest checkpoint manifest.
+## Failure Modes & Mitigations
+- **Replay outages**: Tenacity retries individual sample calls (backoff and stop-after-attempt safeguards). After ten consecutive failures the learner surfaces a fatal error to trigger operator intervention.【F:services/learner-py/learner/replay_client.py†L116-L169】
+- **Heartbeat failures**: timeouts and HTTP errors bubble back to the caller; connection resets trigger a session reset and the next loop iteration retries with a fresh `aiohttp` session.【F:services/learner-py/learner/control.py†L74-L158】
+- **Checkpoint / weight failures**: exceptions during disk writes or Redis publish propagate, causing the learner loop to log errors and unwind so the orchestrator can react (e.g., restart).【F:services/learner-py/learner/core.py†L164-L197】【F:services/learner-py/learner/weights.py†L43-L76】
+- **Non-finite losses**: PPO rejects NaN/Inf losses and raises `ValueError`, leaving the run in a failed state rather than silently propagating corrupted weights.【F:services/learner-py/learner/algo/ppo.py†L95-L106】
 
-## Testing strategy
-- **Unit tests**: deterministic RNG tests for GAE, PPO loss calculations (compare against analytical expectations), config validation.
-- **Component tests**: spin up an in-process fake replay server serving scripted transitions, assert that sampling + training loop progress and priorities are updated.
-- **Integration tests**: docker-compose target launching replay-go + learner with MinIO/miniredis, running a short PPO session to verify checkpoints and metrics endpoints.
-- **Benchmarking**: optional profiling harness using `pytest-benchmark` to measure steps/sec with synthetic data.
+## Testing Strategy
+- Unit tests cover configuration validation, PPO math (including GAE helper), and replay conversion edge cases (`test_config.py`, `test_ppo.py`, `test_utils_math.py`, `test_replay_integration.py`). These run under `pytest` and exercise both success paths and key validation failures.
+- Integration and performance automation is planned but not yet wired; existing scaffolding (`test_integration_validation.py`) focuses on import-time checks until full end-to-end harnesses are available.
 
-## Rollout plan
-1. Scaffold `services/learner-py` with poetry, generated protos, and stub modules.
-2. Implement config + wiring + replay client; verify sampling against replay-go using existing integration tests as reference.
-3. Land PPO core with CPU-only support; confirm checkpoints and metrics.
-4. Hook into orchestrator control plane (heartbeats, tune commands).
-5. Add weight publishing integration for actors.
-6. Harden with observability, failure injection tests, and GPU support.
-
-## Future extensions
-- Multi-GPU / distributed (DDP) training.
-- Learner ensembles or population-based training coordination.
-- On-policy actors (learner also driving rollouts directly through engine) for algorithms like A2C.
-- Rich evaluation scheduler tied to aggregator/leaderboard service.
+## Future Extensions
+- Add orchestrator command handling (pause/resume/tune) in `ControlClient` and `LearnerCore.update_pending_commands`.
+- Support additional weight backends (gRPC publisher, direct file watching) and remote checkpoint sinks (MinIO/GCS) once the storage strategy stabilises.
+- Introduce distributed or multi-GPU learners and richer replay prioritisation once the single-process MVP is hardened.

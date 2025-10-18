@@ -91,20 +91,27 @@ Games register factories in a static registry at startup; the server resolves `e
 // engine-core/src/registry.rs
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
-type Factory = fn() -> Box<dyn ErasedGame>;
-static REGISTRY: Lazy<HashMap<&'static str, Factory>> = Lazy::new(|| HashMap::new());
+pub type GameFactory = fn() -> Box<dyn ErasedGame>;
+static REGISTRY: Lazy<Mutex<HashMap<String, GameFactory>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub fn register(env_id: &'static str, factory: Factory) {
-    // optionally guard duplicates
-    REGISTRY.insert(env_id, factory);
+pub fn register_game(env_id: String, factory: GameFactory) {
+    let mut registry = REGISTRY.lock().unwrap();
+    if registry.contains_key(&env_id) {
+        eprintln!("Warning: overriding {}", env_id);
+    }
+    registry.insert(env_id, factory);
 }
-pub fn create(env_id: &str) -> Option<Box<dyn ErasedGame>> {
-    REGISTRY.get(env_id).map(|f| f())
+
+pub fn create_game(env_id: &str) -> Option<Box<dyn ErasedGame>> {
+    let registry = REGISTRY.lock().unwrap();
+    registry.get(env_id).map(|factory| factory())
 }
 ```
 
-Each game crate exposes `pub fn register()`, called from `engine-server`’s `main`. (You can add a macro/inventory helper to auto-register.)
+Games are currently registered centrally from `engine-server/src/registry_init.rs`, which wires known titles (for example TicTacToe) into the global registry at startup—either by calling `register_game` directly or via the provided `register_game!` macro. (A plugin system could still arrive later if needed.)
 
 > **Optional later:** dynamic plugins via `libloading` for third-party games; start with compile-time registration for simplicity and safety.
 
@@ -123,15 +130,25 @@ The server owns:
 
 ```rust
 #[tonic::async_trait]
-impl engine::engine_server::Engine for EngineSvc {
-  async fn get_capabilities(&self, req: Request<EngineId>) -> Result<Response<Capabilities>, Status> {
-    let id = req.into_inner();
-    let g = registry::create(&id.env_id).ok_or_else(|| Status::not_found("env"))?;
-    Ok(Response::new(g.capabilities()))
-  }
-  // reset/step handle individual game simulation with buffer reuse
+impl engine::engine_server::Engine for EngineService {
+    async fn get_capabilities(
+        &self,
+        request: Request<EngineId>,
+    ) -> Result<Response<Capabilities>, Status> {
+        let engine_id = request.into_inner();
+        if !registry::is_registered(&engine_id.env_id) {
+            return Err(Status::not_found("Unknown env_id"));
+        }
+        let game = registry::create_game(&engine_id.env_id)
+            .ok_or_else(|| Status::internal("Failed to construct game"))?;
+        let proto_caps = Self::capabilities_to_proto(&game.capabilities());
+        Ok(Response::new(proto_caps))
+    }
+    // reset/step reuse pooled buffers and cache game instances per (env, build)
 }
 ```
+
+The protobuf contract also includes a `BatchSimulate` streaming RPC; it is currently left unimplemented on the server while batching semantics are designed.
 
 ---
 

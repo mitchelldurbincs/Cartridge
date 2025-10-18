@@ -1,121 +1,47 @@
 # Orchestrator Service (Go)
 
 ## Overview
-The orchestrator coordinates the lifecycle of every experiment run. It assigns run IDs, stores canonical configuration and
-status in Postgres, brokers runtime control messages, and fans out state changes to downstream consumers like the web dashboard
-and alerting stack. The service is built in Go on top of `chi` for HTTP routing and `zerolog` for structured logging, keeping
-request/response handlers lightweight while critical workflows (scheduling, auditing, status propagation) live in dedicated
-packages.
+- Lightweight REST service that tracks run metadata, accepts learner heartbeats, and manages a FIFO queue of control commands. Built with `chi` for routing and `zerolog` for structured logs.【F:services/orchestrator-go/internal/http/server.go†L19-L80】【F:services/orchestrator-go/cmd/server/main.go†L13-L87】
+- Core logic lives in `internal/service.Orchestrator`, which persists state through a pluggable `storage.RunStore` (in-memory by default) and fans out status/command events through an `events.Publisher` interface (a no-op publisher is wired in development).【F:services/orchestrator-go/internal/service/orchestrator.go†L12-L146】【F:services/orchestrator-go/internal/storage/storage.go†L27-L134】【F:services/orchestrator-go/internal/events/events.go†L1-L32】
+- Designed for local development: the server seeds a `local-run` record on startup when using the memory store so other components can connect immediately.【F:services/orchestrator-go/cmd/server/main.go†L34-L66】
 
-## Responsibilities & scope
-- **Run lifecycle management**: track each run from creation through termination, persist configuration and status, and expose a
-  consistent REST surface that other components can poll or subscribe to.
-- **Control plane**: receive heartbeats from learners, issue bounded runtime tune/pause/resume/terminate commands, and ensure
-  reliable delivery semantics with acknowledgements and retry policy.
-- **State propagation**: write run state transitions to Postgres, publish them to the dashboard event stream, and trigger
-  notifications when service-level objectives (SLOs) are breached.
-- **Auditability**: maintain an append-only log of all operator and automated control actions for compliance and incident
-  response.
+## HTTP Surface
+All routes live under `/api/v1` and speak JSON.
 
-Out of scope: GPU/host placement decisions (delegated to the scheduler), per-run cost attribution, and complex multi-tenant
-queueing.
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/runs` | Create a run record. Generates an ID if omitted. Returns the persisted `types.Run`.【F:services/orchestrator-go/internal/http/server.go†L32-L53】 |
+| `GET` | `/runs/{runID}` | Fetch run metadata (current state, runtime/health status, stats).【F:services/orchestrator-go/internal/http/server.go†L55-L61】 |
+| `POST` | `/runs/{runID}/heartbeat` | Update runtime metrics from a learner heartbeat. Payload must match `types.HeartbeatPayload` (see below). Returns the updated run snapshot.【F:services/orchestrator-go/internal/http/server.go†L63-L84】【F:services/orchestrator-go/internal/types/types.go†L79-L118】 |
+| `POST` | `/runs/{runID}/commands` | Queue a control command (pause/resume/terminate/tune). Generates IDs and timestamps if omitted; validates payloads via `types.RunCommand.Validate`. Returns the stored command record.【F:services/orchestrator-go/internal/http/server.go†L86-L119】【F:services/orchestrator-go/internal/types/types.go†L120-L193】 |
+| `GET` | `/runs/{runID}/commands/next` | Pop the oldest undelivered command for a run and mark it delivered. Returns `204`-equivalent payload `{message:"no pending commands"}` when empty.【F:services/orchestrator-go/internal/http/server.go†L121-L132】【F:services/orchestrator-go/internal/storage/storage.go†L136-L167】 |
+| `POST` | `/runs/{runID}/commands/{commandID}/ack` | Mark a delivered command as acknowledged (sets `AcknowledgedAt`). Returns the updated command.【F:services/orchestrator-go/internal/http/server.go†L134-L145】 |
 
-The service persists canonical run lifecycle using the shared `run_state` enum: `queued`, `provisioning`, `running`, `paused`,
-`terminating`, `completed`, `failed`, `errored`, and `terminated`. Heartbeat-derived learner perspective is stored separately in
-`runs.runtime_status`, while health escalations use `runs.health_status` to represent `healthy`, `heartbeat_stale`, or
-`unresponsive`.
+### Heartbeat Payload
+`types.HeartbeatPayload` requires:
 
-## Control plane
+- `run_id`, `status` (`running|paused|terminating|errored`), `step`, `samples_per_sec`, `loss`, and `checkpoint_version`. Optional `queued_commands` and `notes` provide learner diagnostics.【F:services/orchestrator-go/internal/types/types.go†L79-L118】
+- `Validate` rejects mismatched IDs, status enums outside the supported list, negative values, and regressions in `step` or `checkpoint_version`. Violations propagate as `422 Unprocessable Entity` responses.【F:services/orchestrator-go/internal/types/types.go†L100-L118】【F:services/orchestrator-go/internal/http/server.go†L76-L84】
+- Successful heartbeats merge values into the stored run (`MergeHeartbeat`), set health to `healthy`, and trigger a `RunStatusEvent` via the configured publisher.【F:services/orchestrator-go/internal/types/types.go†L195-L203】【F:services/orchestrator-go/internal/service/orchestrator.go†L66-L117】
 
-### Heartbeat endpoint
-Learners POST heartbeats to `/runs/{run_id}/heartbeat`. Payloads are JSON with the following schema:
+### Command Validation
+- `types.RunCommand.Validate` enforces schema rules per command type (tune payload bounds, empty payloads for pause/resume, terminate reason, actor metadata, issued-at presence). Errors surface as `422` responses.【F:services/orchestrator-go/internal/types/types.go†L120-L193】【F:services/orchestrator-go/internal/http/server.go†L100-L119】
+- Commands are stored once (`storage.ErrConflict` short-circuits duplicates) and mirrored through the publisher as `"queued"`, `"delivered"`, and `"acknowledged"` events when lifecycle methods succeed.【F:services/orchestrator-go/internal/service/orchestrator.go†L119-L187】
 
-| Field | Type | Units | Required | Description |
-| --- | --- | --- | --- | --- |
-| `run_id` | string | — | ✅ | Must match the path parameter; double-checked server-side. |
-| `status` | string | — | ✅ | Enum: `running`, `paused`, `terminating`, `errored`. Mirrors learner local state and persists into `runs.runtime_status`. |
-| `step` | integer | steps | ✅ | Global optimizer step processed. Non-decreasing. |
-| `samples_per_sec` | number | samples/second | ✅ | Rolling average of learner ingest rate. |
-| `loss` | number | unitless | ✅ | Last full-batch loss scalar for monitoring. |
-| `checkpoint_version` | integer | monotonically increasing version | ✅ | Highest checkpoint successfully uploaded. |
-| `queued_commands` | array of strings | — | optional | IDs of control commands still buffered on the learner. |
-| `notes` | string | — | optional | Free-form diagnostic text for temporary anomalies. |
+## Storage Backends
+- `internal/storage.MemoryStore` powers local/dev runs: a mutex-protected map of runs plus per-run command maps. Commands are sorted by `IssuedAt` when delivering `NextPendingCommand`. Transitions are captured in-memory for auditing but not exposed via HTTP yet.【F:services/orchestrator-go/internal/storage/storage.go†L39-L167】
+- `internal/storage/postgres.go` (gated behind the `postgres` build tag) sketches a PostgreSQL-backed `RunStore` for Create/Get/Update operations. Command/transition helpers still rely on the memory implementation until the SQL version is completed.【F:services/orchestrator-go/internal/storage/postgres.go†L1-L114】
 
-The orchestrator enforces:
-- Content-Type `application/json` and request size ≤ 32 KiB.
-- Monotonic `step` and `checkpoint_version`; regressions reject with `409 Conflict`.
-- Missing required fields ⇒ `422 Unprocessable Entity` with validation details.
+## Event Fan-out
+- The orchestrator emits `events.RunStatusEvent` after each heartbeat and `events.CommandEvent` as commands move through the queue. The default `events.NoopPublisher` drops events; a NATS-backed publisher is available behind the `nats` build tag for future integration.【F:services/orchestrator-go/internal/service/orchestrator.go†L94-L146】【F:services/orchestrator-go/internal/events/events.go†L1-L32】【F:services/orchestrator-go/internal/events/nats.go†L5-L101】
 
-### Frequency & timeout policy
-- Learners **must send heartbeats every 15 seconds**. Shorter cadences are accepted but throttled with 429s if below 5 seconds to
-  avoid excessive load.
-- If no valid heartbeat is received within **45 seconds**, the run's `runs.health_status` is set to `heartbeat_stale` and a
-  warning is published to the dashboard and alerting topic.
-- After **3 consecutive missed intervals (≈135 seconds)**, the orchestrator escalates the `health_status` to `unresponsive`,
-  triggers a PagerDuty incident, and emits a terminate recommendation. Operators can override to allow additional time.
+## Logging & Configuration
+- `cmd/server/main.go` exposes an `-addr` flag (default `:8080`) and configures conservative read/write timeouts. Logging uses `zerolog` to stdout with timestamps. No metrics or health endpoints are shipped yet.【F:services/orchestrator-go/cmd/server/main.go†L13-L87】
 
-## Runtime control commands
+## Known Gaps
+- Heartbeat cadence and escalation policy are not enforced in code (no timers or health downgrades besides “set healthy on heartbeat”). Missing heartbeats leave the last recorded health untouched until another component updates it.
+- Command auditing (hash chains, operator attribution) and REST endpoints for transitions/history are not implemented.
+- Postgres storage lacks full coverage (transitions, commands) and `isUniqueViolation` still returns `false`, so conflict handling relies on memory store semantics.
+- There is no authentication or authorization layer; endpoints trust callers.
 
-Control commands are persisted and delivered via the `/runs/{run_id}/commands` endpoint. Clients POST JSON envelopes with the
-following shape:
-
-```json
-{
-  "id": "uuid-v4",
-  "type": "tune" | "pause" | "resume" | "terminate",
-  "issued_at": "RFC3339 timestamp",
-  "actor": {
-    "type": "operator" | "system",
-    "id": "user@example.com" | "orchestrator/auto-slo"
-  },
-  "payload": { /* type-specific */ }
-}
-```
-
-### Type-specific payloads
-- **tune**
-  - Payload fields match the learner’s `TuneCommand` schema:
-    - `learning_rate` (number, optional, 0 < value ≤ 1).
-    - `entropy_coef` (number, optional, 0 ≤ value ≤ 0.1).
-    - `clip_epsilon` (number, optional, 0.05 ≤ value ≤ 0.3).
-    - `notes` (string, optional) describing rationale.
-  - At least one tunable must be supplied; otherwise validation fails.
-- **pause** / **resume**
-  - Empty payload. Orchestrator ensures state transitions are valid (`running` → `pause` only when active, `pause` → `resume`
-    when previously paused).
-- **terminate**
-  - Payload requires `reason` (string, ≤ 256 chars) and optional `final_checkpoint` (boolean) to request a last checkpoint before
-    exit.
-
-### Validation & delivery
-- Commands must reference existing runs; unknown IDs ⇒ `404`.
-- Duplicate command IDs are idempotently ignored and return `200` with existing record.
-- All accepted commands are written to the `run_commands` table (`id`, `run_id`, `type`, `payload`, `issued_by`, `issued_at`, `delivered_at`, `acknowledged_at`, `created_at`).
-- The learner control client long-polls `/runs/{run_id}/commands/next`; when it ACKs a command, the orchestrator stamps
-  `delivered_at` and `acknowledged_at` timestamps and mirrors them in audit logs.
-- Validation errors respond with `422` and machine-readable error codes so learners can log actionable messages.
-
-### Auditing
-- Every command persists the envelope plus request metadata (source IP, user-agent, mTLS client cert fingerprint) into an
-  append-only `control_audit` table keyed by `command_id` for audit replay.
-- Audit entries carry a cryptographic hash chain (`prev_hash`, `entry_hash`) to detect tampering.
-- An hourly job exports deltas to object storage for long-term retention and feeds a read-only dashboard for compliance review.
-
-## Status propagation
-- **Postgres** is the source of truth: heartbeat-derived fields (`last_heartbeat_at`, `current_step`, `runtime_status`, `health_status`, throughput metrics) and command state live within the `runs` and `run_commands` tables.
-- **Web dashboard** subscribes to a `run-status` NATS subject published by the orchestrator. Each state change fan-outs a compact
-  JSON document (`run_id`, `status`, `step`, `samples_per_sec`, `last_error`) so UI tables update in near real time.
-- **Alerting** hooks are implemented via the same event stream with routing keys:
-  - `heartbeat_stale` triggers a Slack warning in `#ml-ops` whenever `runs.health_status` transitions away from `healthy`.
-  - `unresponsive` escalates to PagerDuty.
-  - `terminate` and `errored` events emit structured payloads consumed by the incident pipeline.
-- Downstream consumers are expected to treat the stream as level-triggered: they must coalesce repeated states and always fall
-  back to the persisted values in Postgres on reconnect.
-
-## Interactions with other services
-- Learner clients trust the orchestrator to validate tune payloads and surface resulting state via both heartbeats and the
-  command acknowledgement trail.
-- Dashboard queries the REST API for historical runs but relies on the status stream for live updates, ensuring consistent views
-  with orchestrator-owned truth.
-- Alerting systems ingest only orchestrator-signed events, keeping downstream behaviours consistent even if individual services
-  report conflicting signals.
+These gaps are intentional in the current development snapshot and will need addressing before production deployment.

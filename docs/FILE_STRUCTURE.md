@@ -4,10 +4,11 @@ cartridge/
 │  ├─ replay-go/
 │  ├─ weights-go/
 │  ├─ web-go/                         # UI/API (Svelte UI under /web-go/ui)
-│  ├─ engine-rust/                    # console server (tonic) + registry
-│  ├─ games/
-│  │  ├─ tictactoe/
-│  │  └─ <next-game>/
+│  ├─ engine-rust/                    # Rust workspace (core/server/proto/games)
+│  │  ├─ engine-core/                # typed traits, adapters, registry
+│  │  ├─ engine-server/              # tonic gRPC binary + buffer pools
+│  │  ├─ engine-proto/               # prost/tonic generated bindings
+│  │  └─ games-tictactoe/            # reference environment implementation
 │  └─ learner-py/
 │     ├─ learner/                     # training loop, checkpoint, IO
 │     └─ scripts/                     # train.py, eval.py

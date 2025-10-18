@@ -213,22 +213,23 @@ Create complete reference implementation demonstrating the framework:
 
 ```rust
 // games-tictactoe/src/lib.rs
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {
-    board: [u8; 9],  // 0=empty, 1=X, 2=O
+    board: [u8; 9],  // 0 = empty, 1 = X, 2 = O
     current_player: u8,
     winner: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Place(u8), // position 0-8
 }
 
-#[derive(Clone)]
-pub struct Obs {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Observation {
     board_view: [f32; 18], // one-hot encoding for X/O
     legal_moves: [f32; 9], // mask for valid moves
+    current_player: [f32; 2],
 }
 
 pub struct TicTacToe;
@@ -236,7 +237,7 @@ pub struct TicTacToe;
 impl Game for TicTacToe {
     type State = State;
     type Action = Action;
-    type Obs = Obs;
+    type Obs = Observation;
     
     fn engine_id(&self) -> EngineId {
         EngineId {
@@ -247,56 +248,145 @@ impl Game for TicTacToe {
     
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            id: Some(self.engine_id()),
-            enc: Some(Encoding {
-                state: "packed_u8:v1".to_string(),
-                action: "discrete:v1".to_string(), 
-                obs: "f32x27:v1".to_string(),
+            id: self.engine_id(),
+            encoding: Encoding {
+                state: "tictactoe_state:v1".to_string(),
+                action: "discrete_position:v1".to_string(), 
+                obs: "f32x29:v1".to_string(), // 18 board + 9 mask + 2 player flags
                 schema_version: 1,
-            }),
+            },
             max_horizon: 9,
-            action_space: Some(ActionSpace::DiscreteN(9)),
-            preferred_batch: 32,
+            action_space: ActionSpace::Discrete(9),
+            preferred_batch: 64,
         }
     }
     
-    // Implementation of reset, step, encode/decode methods...
+    fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+        let state = State::new();
+        let obs = Observation::from_state(&state);
+        (state, obs)
+    }
+    
+    fn step(
+        &mut self,
+        state: &mut Self::State,
+        action: Self::Action,
+        _rng: &mut ChaCha20Rng,
+    ) -> (Self::Obs, f32, bool, u64) {
+        // Updates the board, computes shaped reward, and packs info bits
+        // (legal move mask, current player, winner, move count) into the u64.
+        let previous_player = state.current_player;
+        *state = state.make_move(action.position());
+        let obs = Observation::from_state(state);
+        let reward = Self::calculate_reward(state, previous_player);
+        let done = state.is_done();
+        let info = Self::compute_info_bits(state);
+        (obs, reward, done, info)
+    }
 }
 ```
+
+State/action/observation encoding hooks serialize the board as 11 bytes, actions as a single position byte, and the observation as 29 little-endian `f32` values, enforcing bounds checks before accepting data back from the wire. Helper constructors such as `State::new`, `Observation::from_state`, `calculate_reward`, and `compute_info_bits` are implemented exactly as in the reference crate to keep the example deterministic and introspectable.
 
 ### Phase 4: gRPC Server (Network Layer)
 
 #### 4.1 Tonic Server Implementation
+// imports (Request/Response/Status, Entry, create_game, etc.) omitted for brevity
 ```rust
 // engine-server/src/service.rs
+#[derive(Debug)]
+pub struct EngineService {
+    buffer_pool: BufferPool,
+    game_cache: Arc<Mutex<HashMap<(String, String), Box<dyn ErasedGame>>>>,
+}
+
 #[tonic::async_trait]
-impl engine::engine_server::Engine for EngineSvc {
-    async fn get_capabilities(&self, req: Request<EngineId>) -> Result<Response<Capabilities>, Status> {
-        let id = req.into_inner();
-        let game = registry::create(&id.env_id)
-            .ok_or_else(|| Status::not_found("Unknown env_id"))?;
-        Ok(Response::new(game.capabilities()))
+impl engine_proto::engine_server::Engine for EngineService {
+    async fn get_capabilities(
+        &self,
+        request: Request<EngineId>,
+    ) -> TonicResult<Response<Capabilities>> {
+        let engine_id = request.into_inner();
+        if !is_registered(&engine_id.env_id) {
+            return Err(Status::not_found(format!("Unknown env_id: {}", engine_id.env_id)));
+        }
+
+        let game = create_game(&engine_id.env_id)
+            .ok_or_else(|| Status::internal("Failed to create game instance"))?;
+        let proto_caps = Self::capabilities_to_proto(&game.capabilities());
+        Ok(Response::new(proto_caps))
     }
 
-    async fn reset(&self, req: Request<ResetRequest>) -> Result<Response<ResetResponse>, Status> {
-        let req = req.into_inner();
-        let mut game = registry::create(&req.id.unwrap().env_id)
-            .ok_or_else(|| Status::not_found("Unknown env_id"))?;
-            
-        let mut state_buf = Vec::new();
-        let mut obs_buf = Vec::new();
-        game.reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf);
-        
-        Ok(Response::new(ResetResponse {
-            state: state_buf,
-            obs: obs_buf,
-        }))
+    async fn reset(&self, request: Request<ResetRequest>) -> TonicResult<Response<ResetResponse>> {
+        let req = request.into_inner();
+        let engine_id = req
+            .id
+            .ok_or_else(|| Status::invalid_argument("Missing engine_id"))?;
+
+        let mut state_buf = self.buffer_pool.get_state_buffer();
+        let mut obs_buf = self.buffer_pool.get_obs_buffer();
+
+        let mut cache = self.game_cache.lock().await;
+        let game = match cache.entry((engine_id.env_id.clone(), engine_id.build_id.clone())) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let game = create_game(&engine_id.env_id)
+                    .ok_or_else(|| Status::not_found(format!("Unknown env_id: {}", engine_id.env_id)))?;
+                entry.insert(game)
+            }
+        };
+
+        game.reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf)
+            .map_err(|e| Status::internal(format!("Reset failed: {}", e)))?;
+
+        let response = ResetResponse {
+            state: state_buf.clone(),
+            obs: obs_buf.clone(),
+        };
+
+        self.buffer_pool.return_state_buffer(state_buf);
+        self.buffer_pool.return_obs_buffer(obs_buf);
+
+        Ok(Response::new(response))
     }
 
-    async fn batch_simulate(&self, req: Request<BatchSimulateRequest>) -> Result<Response<Self::BatchSimulateStream>, Status> {
-        // Implement streaming batch simulation with backpressure
-        todo!()
+    async fn step(&self, request: Request<StepRequest>) -> TonicResult<Response<StepResponse>> {
+        let req = request.into_inner();
+        let engine_id = req
+            .id
+            .ok_or_else(|| Status::invalid_argument("Missing engine_id"))?;
+
+        if !is_registered(&engine_id.env_id) {
+            return Err(Status::not_found(format!("Unknown env_id: {}", engine_id.env_id)));
+        }
+
+        let mut cache = self.game_cache.lock().await;
+        let game = cache
+            .get_mut(&(engine_id.env_id.clone(), engine_id.build_id.clone()))
+            .ok_or_else(|| Status::failed_precondition("Game not initialized - call reset before step"))?;
+
+        let mut state_buf = self.buffer_pool.get_state_buffer();
+        let mut obs_buf = self.buffer_pool.get_obs_buffer();
+        let (reward, done, info) = game
+            .step(&req.state, &req.action, &mut state_buf, &mut obs_buf)
+            .map_err(|e| Status::internal(format!("Step failed: {}", e)))?;
+
+        let response = StepResponse {
+            state: state_buf.clone(),
+            obs: obs_buf.clone(),
+            reward,
+            done,
+            info,
+        };
+
+        self.buffer_pool.return_state_buffer(state_buf);
+        self.buffer_pool.return_obs_buffer(obs_buf);
+
+        Ok(Response::new(response))
     }
+
+    // The BatchSimulate streaming RPC is defined in the proto but not yet implemented;
+    // work remains to design batching semantics and integrate buffer reuse.
 }
 ```
 
@@ -322,6 +412,8 @@ impl BufferPool {
     }
 }
 ```
+
+The production code additionally offers `with_capacity` for warm pools, `stats()` for observability, and an RAII `PooledBuffer` helper so callers can rely on automatic returns when buffers drop.
 
 ### Phase 5: Build System & Tooling
 
