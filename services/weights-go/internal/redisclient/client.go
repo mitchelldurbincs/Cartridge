@@ -76,6 +76,9 @@ func (c *Client) Do(ctx context.Context, args ...string) (interface{}, error) {
 	}
 
 	d := net.Dialer{}
+	if c.timeout > 0 {
+		d.Timeout = c.timeout
+	}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
 		return nil, err

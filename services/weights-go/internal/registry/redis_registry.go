@@ -138,18 +138,14 @@ func (r *RedisRegistry) recordSnapshot(snapshot service.VersionSnapshot) {
 
 func (r *RedisRegistry) notifyWatchers(snapshot service.VersionSnapshot) {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	watchers := r.watchers[snapshot.RunID]
 	if len(watchers) == 0 {
-		r.mu.RUnlock()
 		return
 	}
-	chans := make([]chan service.VersionSnapshot, 0, len(watchers))
-	for _, ch := range watchers {
-		chans = append(chans, ch)
-	}
-	r.mu.RUnlock()
 
-	for _, ch := range chans {
+	for _, ch := range watchers {
 		select {
 		case ch <- snapshot:
 		default:
