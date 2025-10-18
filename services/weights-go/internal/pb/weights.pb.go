@@ -19,10 +19,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// This is a compile-time assertion that a sufficiently up-to-date version
-// of the legacy proto package is being used.
-const _ = protoimpl.GoPackageIsVersion4
-
 // PublishWeightsRequest carries learner output metadata.
 type PublishWeightsRequest struct {
 	state         protoimpl.MessageState

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -13,22 +14,51 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	rediscompat "github.com/cartridge/weights/internal/compat/redis"
 	"github.com/cartridge/weights/internal/config"
 	grpcserver "github.com/cartridge/weights/internal/grpc"
+	"github.com/cartridge/weights/internal/observability"
 	weightspb "github.com/cartridge/weights/internal/pb"
+	"github.com/cartridge/weights/internal/redisclient"
 	"github.com/cartridge/weights/internal/registry"
 	"github.com/cartridge/weights/internal/service"
 )
 
 func main() {
-	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	logger := zerolog.New(os.Stdout)
+	logger = logger.With().Timestamp().Logger()
 	cfg := config.Load()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	reg := registry.NewMemoryRegistry(cfg.Registry.HistoryDepth)
-	svc := service.New(reg, &logger)
+	metrics := observability.NewMetrics()
+	if addr := cfg.Observability.MetricsAddress; addr != "" {
+		observability.RunMetricsServer(ctx, addr, metrics.Handler(), logger)
+	}
+
+	tracer := observability.NoopTracer()
+	if cfg.Observability.TracingEnabled {
+		tracer = observability.NewLoggerTracer(logger)
+	}
+
+	reg, err := buildRegistry(ctx, cfg)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to configure registry backend")
+	}
+
+	opts := []service.Option{service.WithTracer(tracer), service.WithMetrics(metrics)}
+
+	if cfg.Compatibility.MirrorToRedis {
+		publisher, err := buildCompatibilityPublisher(ctx, cfg, logger)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to configure redis compatibility publisher")
+		} else {
+			opts = append(opts, service.WithPublisher(publisher))
+		}
+	}
+
+	svc := service.New(reg, logger, opts...)
 
 	lis, err := net.Listen("tcp", cfg.Server.Endpoint())
 	if err != nil {
@@ -80,4 +110,47 @@ func main() {
 
 	// Provide a small delay to flush logs when running in containers.
 	time.Sleep(200 * time.Millisecond)
+}
+
+func buildRegistry(ctx context.Context, cfg config.Config) (service.Registry, error) {
+	switch cfg.Registry.Backend {
+	case "", "memory":
+		return registry.NewMemoryRegistry(cfg.Registry.HistoryDepth), nil
+	case "redis":
+		address := cfg.Registry.PersistenceDSN
+		if address == "" {
+			address = cfg.Redis.Address
+		}
+		client, err := redisclient.New(redisclient.Options{
+			Address:  address,
+			Password: cfg.Redis.Password,
+			Database: cfg.Redis.Database,
+			Timeout:  cfg.Redis.Timeout,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := client.Do(ctx, "PING"); err != nil {
+			return nil, err
+		}
+		return registry.NewRedisRegistry(client, cfg.Registry.HistoryDepth)
+	default:
+		return nil, fmt.Errorf("unsupported registry backend %q", cfg.Registry.Backend)
+	}
+}
+
+func buildCompatibilityPublisher(ctx context.Context, cfg config.Config, logger *zerolog.Logger) (service.Publisher, error) {
+	client, err := redisclient.New(redisclient.Options{
+		Address:  cfg.Redis.Address,
+		Password: cfg.Redis.Password,
+		Database: cfg.Redis.Database,
+		Timeout:  cfg.Redis.Timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.Do(ctx, "PING"); err != nil {
+		return nil, err
+	}
+	return rediscompat.NewPublisher(client, cfg.Redis.Channel, logger)
 }
