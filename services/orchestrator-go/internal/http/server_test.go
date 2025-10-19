@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 
 	"github.com/cartridge/orchestrator/internal/events"
+	"github.com/cartridge/orchestrator/internal/metrics"
 	"github.com/cartridge/orchestrator/internal/service"
 	"github.com/cartridge/orchestrator/internal/storage"
 )
@@ -19,8 +21,11 @@ import (
 func TestCreateRunAndHeartbeat(t *testing.T) {
 	store := storage.NewMemoryStore()
 	logger := zerolog.New(io.Discard)
+	registry := prometheus.NewRegistry()
+	collector := metrics.NewCollector(registry)
 	orch := service.NewOrchestrator(store, events.NoopPublisher{}, logger)
-	server := NewServer(orch, logger)
+	orch.WithMetrics(collector)
+	server := NewServer(orch, logger, collector)
 
 	runPayload := map[string]any{
 		"id":              "run-1",
@@ -58,8 +63,11 @@ func TestCreateRunAndHeartbeat(t *testing.T) {
 func TestCommandLifecycle(t *testing.T) {
 	store := storage.NewMemoryStore()
 	logger := zerolog.New(io.Discard)
+	registry := prometheus.NewRegistry()
+	collector := metrics.NewCollector(registry)
 	orch := service.NewOrchestrator(store, events.NoopPublisher{}, logger)
-	server := NewServer(orch, logger)
+	orch.WithMetrics(collector)
+	server := NewServer(orch, logger, collector)
 
 	runPayload := map[string]any{
 		"id":              "run-2",

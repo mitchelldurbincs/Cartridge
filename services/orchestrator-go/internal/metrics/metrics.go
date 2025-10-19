@@ -1,59 +1,106 @@
 package metrics
 
 import (
+	"net/http"
+	"strconv"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics collector for orchestrator operations
+// Collector exposes Prometheus metrics for orchestrator operations.
 type Collector struct {
-	logger zerolog.Logger
+	heartbeatLatency    prometheus.Observer
+	apiRequestDuration  *prometheus.HistogramVec
+	runStateTransitions *prometheus.CounterVec
+	healthEvents        *prometheus.CounterVec
+	gatherer            prometheus.Gatherer
 }
 
-func NewCollector(logger zerolog.Logger) *Collector {
+// NewCollector constructs the metrics collector, registering counters and histograms
+// with the provided registerer. If reg is nil, the Prometheus default registerer is
+// used.
+func NewCollector(reg prometheus.Registerer) *Collector {
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+
+	gatherer := prometheus.DefaultGatherer
+	if g, ok := reg.(prometheus.Gatherer); ok {
+		gatherer = g
+	}
+
+	heartbeatLatency := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "orchestrator_heartbeat_latency_seconds",
+		Help:    "Time elapsed between consecutive heartbeats per run.",
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120},
+	})
+
+	apiRequestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "orchestrator_http_request_duration_seconds",
+		Help:    "Latency for orchestrator HTTP API requests.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"method", "route", "status"})
+
+	runStateTransitions := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "orchestrator_run_state_transitions_total",
+		Help: "Count of run state transitions processed by the orchestrator.",
+	}, []string{"from", "to"})
+
+	healthEvents := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "orchestrator_health_events_total",
+		Help: "Count of health monitoring events emitted by the orchestrator.",
+	}, []string{"type", "severity"})
+
+	reg.MustRegister(heartbeatLatency, apiRequestDuration, runStateTransitions, healthEvents)
+
 	return &Collector{
-		logger: logger,
+		heartbeatLatency:    heartbeatLatency,
+		apiRequestDuration:  apiRequestDuration,
+		runStateTransitions: runStateTransitions,
+		healthEvents:        healthEvents,
+		gatherer:            gatherer,
 	}
 }
 
-// Track heartbeat metrics
-func (c *Collector) HeartbeatReceived(runID string, step int64, latency time.Duration) {
-	c.logger.Info().
-		Str("metric", "heartbeat_received").
-		Str("run_id", runID).
-		Int64("step", step).
-		Dur("latency", latency).
-		Msg("Heartbeat metric")
+// ObserveHeartbeatLatency records the time elapsed between heartbeats.
+func (c *Collector) ObserveHeartbeatLatency(latency time.Duration) {
+	if c == nil {
+		return
+	}
+	c.heartbeatLatency.Observe(latency.Seconds())
 }
 
-// Track API request metrics
-func (c *Collector) APIRequest(method, endpoint string, statusCode int, duration time.Duration) {
-	c.logger.Info().
-		Str("metric", "api_request").
-		Str("method", method).
-		Str("endpoint", endpoint).
-		Int("status_code", statusCode).
-		Dur("duration", duration).
-		Msg("API request metric")
+// ObserveAPIRequest records request duration per method, route, and status code.
+func (c *Collector) ObserveAPIRequest(method, route string, statusCode int, duration time.Duration) {
+	if c == nil {
+		return
+	}
+	c.apiRequestDuration.WithLabelValues(method, route, strconv.Itoa(statusCode)).Observe(duration.Seconds())
 }
 
-// Track run state transitions
-func (c *Collector) RunStateTransition(runID string, fromState, toState string) {
-	c.logger.Info().
-		Str("metric", "run_state_transition").
-		Str("run_id", runID).
-		Str("from_state", fromState).
-		Str("to_state", toState).
-		Msg("Run state transition metric")
+// RecordRunStateTransition increments the run state transition counter.
+func (c *Collector) RecordRunStateTransition(fromState, toState string) {
+	if c == nil {
+		return
+	}
+	c.runStateTransitions.WithLabelValues(fromState, toState).Inc()
 }
 
-// Track health monitoring events
-func (c *Collector) HealthEvent(runID string, eventType string, severity string) {
-	c.logger.Warn().
-		Str("metric", "health_event").
-		Str("run_id", runID).
-		Str("event_type", eventType).
-		Str("severity", severity).
-		Msg("Health monitoring event")
+// RecordHealthEvent increments the health monitoring counter.
+func (c *Collector) RecordHealthEvent(eventType, severity string) {
+	if c == nil {
+		return
+	}
+	c.healthEvents.WithLabelValues(eventType, severity).Inc()
+}
+
+// Handler exposes the registered metrics using promhttp.
+func (c *Collector) Handler() http.Handler {
+	gatherer := prometheus.DefaultGatherer
+	if c != nil && c.gatherer != nil {
+		gatherer = c.gatherer
+	}
+	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})
 }

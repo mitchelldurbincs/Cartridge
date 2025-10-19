@@ -20,8 +20,8 @@ type LogFormatter interface {
 }
 
 // RequestLogger creates a zerolog-based request logger middleware
-func RequestLogger(logger zerolog.Logger) func(next http.Handler) http.Handler {
-	formatter := &RequestLoggerFormatter{logger}
+func RequestLogger(logger *zerolog.Logger) func(next http.Handler) http.Handler {
+	formatter := &RequestLoggerFormatter{Logger: logger}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			entry := formatter.NewLogEntry(r)
@@ -34,7 +34,7 @@ func RequestLogger(logger zerolog.Logger) func(next http.Handler) http.Handler {
 
 // RequestLoggerFormatter implements LogFormatter interface
 type RequestLoggerFormatter struct {
-	Logger zerolog.Logger
+	Logger *zerolog.Logger
 }
 
 func (l *RequestLoggerFormatter) NewLogEntry(r *http.Request) LogEntry {
@@ -55,19 +55,21 @@ func (l *RequestLoggerFormatter) NewLogEntry(r *http.Request) LogEntry {
 		StartTime:     time.Now(),
 	}
 
-	entry.Logger.Info().
-		Str("correlation_id", correlationID).
-		Str("method", r.Method).
-		Str("url", r.URL.String()).
-		Str("remote_addr", r.RemoteAddr).
-		Msg("Request started")
+	if entry.Logger != nil {
+		entry.Logger.Info().
+			Str("correlation_id", correlationID).
+			Str("method", r.Method).
+			Str("url", r.URL.String()).
+			Str("remote_addr", r.RemoteAddr).
+			Msg("Request started")
+	}
 
 	return entry
 }
 
 // RequestLoggerEntry implements chi's LogEntry interface
 type RequestLoggerEntry struct {
-	Logger        zerolog.Logger
+	Logger        *zerolog.Logger
 	CorrelationID string
 	Method        string
 	URL           string
@@ -83,6 +85,10 @@ func (l *RequestLoggerEntry) Write(status, bytes int, header http.Header, elapse
 		level = zerolog.ErrorLevel
 	}
 
+	if l.Logger == nil {
+		return
+	}
+
 	l.Logger.WithLevel(level).
 		Str("correlation_id", l.CorrelationID).
 		Str("method", l.Method).
@@ -95,6 +101,10 @@ func (l *RequestLoggerEntry) Write(status, bytes int, header http.Header, elapse
 }
 
 func (l *RequestLoggerEntry) Panic(v interface{}, stack []byte) {
+	if l.Logger == nil {
+		return
+	}
+
 	l.Logger.Error().
 		Str("correlation_id", l.CorrelationID).
 		Str("method", l.Method).
