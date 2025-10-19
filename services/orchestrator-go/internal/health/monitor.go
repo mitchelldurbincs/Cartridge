@@ -7,6 +7,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/cartridge/orchestrator/internal/events"
+	"github.com/cartridge/orchestrator/internal/metrics"
 	"github.com/cartridge/orchestrator/internal/service"
 	"github.com/cartridge/orchestrator/internal/types"
 )
@@ -24,6 +25,7 @@ type Monitor struct {
 	publisher events.Publisher
 	config    Config
 	logger    zerolog.Logger
+	metrics   *metrics.Collector
 }
 
 // NewMonitor creates a new health monitor
@@ -34,6 +36,11 @@ func NewMonitor(orch *service.Orchestrator, publisher events.Publisher, config C
 		config:    config,
 		logger:    logger,
 	}
+}
+
+// WithMetrics configures the monitor to emit Prometheus metrics.
+func (m *Monitor) WithMetrics(collector *metrics.Collector) {
+	m.metrics = collector
 }
 
 // Start begins the health monitoring loop
@@ -92,6 +99,10 @@ func (m *Monitor) markStale(ctx context.Context, run types.Run) {
 		Time("last_heartbeat", *run.LastHeartbeatAt).
 		Msg("Marking run as stale")
 
+	if m.metrics != nil {
+		m.metrics.RecordHealthEvent("heartbeat_stale", "warning")
+	}
+
 	// Update run health status
 	run.HealthStatus = types.RunHealthHeartbeatStale
 	// Would need UpdateRunHealth method in service
@@ -116,6 +127,10 @@ func (m *Monitor) markUnresponsive(ctx context.Context, run types.Run) {
 		Str("run_id", run.ID).
 		Time("last_heartbeat", *run.LastHeartbeatAt).
 		Msg("Marking run as unresponsive")
+
+	if m.metrics != nil {
+		m.metrics.RecordHealthEvent("heartbeat_unresponsive", "critical")
+	}
 
 	// Update run health status
 	run.HealthStatus = types.RunHealthUnresponsive

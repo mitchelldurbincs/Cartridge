@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/cartridge/orchestrator/internal/events"
+	"github.com/cartridge/orchestrator/internal/metrics"
 	"github.com/cartridge/orchestrator/internal/storage"
 	"github.com/cartridge/orchestrator/internal/types"
 )
@@ -26,10 +27,11 @@ type CreateRunInput struct {
 
 // Orchestrator implements the orchestrator workflows on top of storage.
 type Orchestrator struct {
-	store  storage.RunStore
-	events events.Publisher
-	logger *zerolog.Logger
-	now    func() time.Time
+	store   storage.RunStore
+	events  events.Publisher
+	logger  *zerolog.Logger
+	now     func() time.Time
+	metrics *metrics.Collector
 }
 
 // NewOrchestrator constructs an Orchestrator instance.
@@ -40,6 +42,11 @@ func NewOrchestrator(store storage.RunStore, publisher events.Publisher, logger 
 		logger: logger,
 		now:    time.Now,
 	}
+}
+
+// WithMetrics attaches a metrics collector to the orchestrator.
+func (o *Orchestrator) WithMetrics(collector *metrics.Collector) {
+	o.metrics = collector
 }
 
 // WithNow allows tests to override the time source.
@@ -87,6 +94,8 @@ func (o *Orchestrator) CreateRun(ctx context.Context, input CreateRunInput) (typ
 	}
 	if err := o.store.AppendTransition(ctx, transition); err != nil {
 		o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to record transition")
+	} else if o.metrics != nil {
+		o.metrics.RecordRunStateTransition(string(transition.FromState), string(transition.ToState))
 	}
 	return run, nil
 }
@@ -106,11 +115,21 @@ func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payloa
 		return types.Run{}, err
 	}
 	now := o.now()
+	var latency time.Duration
+	if run.LastHeartbeatAt != nil {
+		latency = now.Sub(*run.LastHeartbeatAt)
+		if latency < 0 {
+			latency = 0
+		}
+	}
 	run = run.MergeHeartbeat(payload, now)
 	run.HealthStatus = types.RunHealthHealthy
 	run.UpdatedAt = now
 	if err := o.store.UpdateRun(ctx, run); err != nil {
 		return types.Run{}, err
+	}
+	if o.metrics != nil {
+		o.metrics.ObserveHeartbeatLatency(latency)
 	}
 	event := events.RunStatusEvent{
 		RunID:            run.ID,

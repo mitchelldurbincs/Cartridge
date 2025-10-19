@@ -13,6 +13,7 @@ import (
 
 	"github.com/cartridge/orchestrator/internal/events"
 	httpServer "github.com/cartridge/orchestrator/internal/http"
+	"github.com/cartridge/orchestrator/internal/metrics"
 	"github.com/cartridge/orchestrator/internal/service"
 	"github.com/cartridge/orchestrator/internal/storage"
 )
@@ -26,7 +27,9 @@ func main() {
 
 	store := storage.NewMemoryStore()
 	publisher := events.NoopPublisher{}
+	collector := metrics.NewCollector(nil)
 	orch := service.NewOrchestrator(store, publisher, logger)
+	orch.WithMetrics(collector)
 
 	// Auto-create local-run for development
 	ctx := context.Background()
@@ -46,7 +49,7 @@ func main() {
 		}
 	}
 
-	h := httpServer.NewServer(orch, logger)
+	h := httpServer.NewServer(orch, logger, collector)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           h.Routes(),
