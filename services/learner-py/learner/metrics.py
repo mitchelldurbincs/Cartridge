@@ -14,7 +14,15 @@ class MetricsRegistry:
 
     def __init__(self, *, port: int = 9001) -> None:
         self._port = port
-        self.samples_total = Counter("learner_samples_total", "Number of samples processed", ["status"])
+        self.sample_attempts_total = Counter(
+            "learner_sample_attempts_total",
+            "Number of replay sample attempts",
+        )
+        self.sample_results_total = Counter(
+            "learner_sample_results_total",
+            "Replay sampling outcomes by result",
+            ["result"],
+        )
         self.sample_latency_seconds = Histogram(
             "learner_sample_latency_seconds", "Latency of replay sampling requests"
         )
@@ -22,6 +30,14 @@ class MetricsRegistry:
         self.policy_loss = Gauge("learner_policy_loss", "Latest policy loss")
         self.value_loss = Gauge("learner_value_loss", "Latest value loss")
         self.entropy = Gauge("learner_entropy", "Latest policy entropy")
+        self.replay_queue_depth = Gauge(
+            "learner_replay_queue_depth",
+            "Depth of the learner replay prefetch queue",
+        )
+        self.heartbeat_success = Gauge(
+            "learner_heartbeat_success",
+            "Whether the most recent heartbeat emission succeeded",
+        )
         self.checkpoint_duration = Histogram(
             "learner_checkpoint_duration_seconds", "Duration of checkpoint operations"
         )

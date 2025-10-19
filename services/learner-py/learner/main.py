@@ -56,7 +56,7 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
         metrics = MetricsRegistry()
         weights = WeightPublisher(config.weights)
         checkpoints = CheckpointManager(config.checkpoints)
-        control = ControlClient(config.control)
+        control = ControlClient(config.control, metrics=metrics)
         replay = ReplayClient(config.replay, metrics=metrics)
         _LOGGER.info("All service components initialized successfully")
 
