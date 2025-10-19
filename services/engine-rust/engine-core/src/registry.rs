@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 
+use metrics::{counter, gauge};
+use tracing::warn;
+
 use crate::erased::ErasedGame;
 
 /// Factory function type for creating game instances
@@ -59,9 +62,11 @@ static REGISTRY: Lazy<Mutex<HashMap<String, GameFactory>>> =
 pub fn register_game(env_id: String, factory: GameFactory) {
     let mut registry = REGISTRY.lock().unwrap();
     if registry.contains_key(&env_id) {
-        eprintln!("Warning: Overriding existing game registration for '{}'", env_id);
+        warn!(env_id = %env_id, "Overriding existing game registration");
     }
+    counter!("engine_registry_registrations_total", 1, "env_id" => env_id.as_str());
     registry.insert(env_id, factory);
+    gauge!("engine_registry_games", registry.len() as f64);
 }
 
 /// Create a new game instance by env_id

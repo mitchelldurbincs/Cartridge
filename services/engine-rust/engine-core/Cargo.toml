@@ -21,6 +21,10 @@ serde = { workspace = true }
 # Protobuf (will be used by generated code)
 prost = { workspace = true }
 
+# Observability
+tracing = { workspace = true }
+metrics = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }

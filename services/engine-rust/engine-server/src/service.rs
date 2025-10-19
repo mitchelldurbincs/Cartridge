@@ -16,6 +16,8 @@ use engine_proto::{
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Result as TonicResult, Status};
 
+use metrics::counter;
+
 use crate::buffers::BufferPool;
 
 /// Engine gRPC service implementation
@@ -94,10 +96,17 @@ impl Engine for EngineService {
         &self,
         request: Request<EngineId>,
     ) -> TonicResult<Response<Capabilities>> {
+        counter!("engine_rpc_requests_total", 1, "method" => "get_capabilities");
         let engine_id = request.into_inner();
 
         // Validate env_id
         if !is_registered(&engine_id.env_id) {
+            counter!(
+                "engine_rpc_failures_total",
+                1,
+                "method" => "get_capabilities",
+                "error" => "unknown_env"
+            );
             return Err(Status::not_found(format!(
                 "Unknown env_id: {}",
                 engine_id.env_id
@@ -105,21 +114,47 @@ impl Engine for EngineService {
         }
 
         // Create game instance to get capabilities
-        let game = create_game(&engine_id.env_id)
-            .ok_or_else(|| Status::internal("Failed to create game instance"))?;
+        let game = match create_game(&engine_id.env_id) {
+            Some(game) => game,
+            None => {
+                counter!(
+                    "engine_rpc_failures_total",
+                    1,
+                    "method" => "get_capabilities",
+                    "error" => "create_failed"
+                );
+                return Err(Status::internal("Failed to create game instance"));
+            }
+        };
 
         let capabilities = game.capabilities();
         let proto_caps = Self::capabilities_to_proto(&capabilities);
+
+        counter!(
+            "engine_rpc_success_total",
+            1,
+            "method" => "get_capabilities"
+        );
 
         Ok(Response::new(proto_caps))
     }
 
     async fn reset(&self, request: Request<ResetRequest>) -> TonicResult<Response<ResetResponse>> {
+        counter!("engine_rpc_requests_total", 1, "method" => "reset");
         let req = request.into_inner();
 
-        let engine_id = req
-            .id
-            .ok_or_else(|| Status::invalid_argument("Missing engine_id"))?;
+        let engine_id = match req.id {
+            Some(id) => id,
+            None => {
+                counter!(
+                    "engine_rpc_failures_total",
+                    1,
+                    "method" => "reset",
+                    "error" => "missing_engine_id"
+                );
+                return Err(Status::invalid_argument("Missing engine_id"));
+            }
+        };
 
         let env_id = engine_id.env_id.clone();
         let build_id = engine_id.build_id.clone();
@@ -132,16 +167,30 @@ impl Engine for EngineService {
 
         let game = match cache.entry((env_id.clone(), build_id)) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let game = create_game(&env_id)
-                    .ok_or_else(|| Status::not_found(format!("Unknown env_id: {}", env_id)))?;
-                entry.insert(game)
-            }
+            Entry::Vacant(entry) => match create_game(&env_id) {
+                Some(game) => entry.insert(game),
+                None => {
+                    counter!(
+                        "engine_rpc_failures_total",
+                        1,
+                        "method" => "reset",
+                        "error" => "unknown_env"
+                    );
+                    return Err(Status::not_found(format!("Unknown env_id: {}", env_id)));
+                }
+            },
         };
 
         // Perform reset
-        game.reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf)
-            .map_err(|e| Status::internal(format!("Reset failed: {}", e)))?;
+        if let Err(e) = game.reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf) {
+            counter!(
+                "engine_rpc_failures_total",
+                1,
+                "method" => "reset",
+                "error" => "reset_failed"
+            );
+            return Err(Status::internal(format!("Reset failed: {}", e)));
+        }
 
         drop(cache);
 
@@ -154,17 +203,39 @@ impl Engine for EngineService {
         self.buffer_pool.return_state_buffer(state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
 
+        counter!(
+            "engine_rpc_success_total",
+            1,
+            "method" => "reset"
+        );
+
         Ok(Response::new(response))
     }
 
     async fn step(&self, request: Request<StepRequest>) -> TonicResult<Response<StepResponse>> {
+        counter!("engine_rpc_requests_total", 1, "method" => "step");
         let req = request.into_inner();
 
-        let engine_id = req
-            .id
-            .ok_or_else(|| Status::invalid_argument("Missing engine_id"))?;
+        let engine_id = match req.id {
+            Some(id) => id,
+            None => {
+                counter!(
+                    "engine_rpc_failures_total",
+                    1,
+                    "method" => "step",
+                    "error" => "missing_engine_id"
+                );
+                return Err(Status::invalid_argument("Missing engine_id"));
+            }
+        };
 
         if !is_registered(&engine_id.env_id) {
+            counter!(
+                "engine_rpc_failures_total",
+                1,
+                "method" => "step",
+                "error" => "unknown_env"
+            );
             return Err(Status::not_found(format!(
                 "Unknown env_id: {}",
                 engine_id.env_id
@@ -177,9 +248,15 @@ impl Engine for EngineService {
         let game = match cache.get_mut(&key) {
             Some(game) => game,
             None => {
+                counter!(
+                    "engine_rpc_failures_total",
+                    1,
+                    "method" => "step",
+                    "error" => "not_initialized"
+                );
                 return Err(Status::failed_precondition(
                     "Game not initialized - call reset before step",
-                ))
+                ));
             }
         };
 
@@ -188,9 +265,19 @@ impl Engine for EngineService {
         let mut obs_buf = self.buffer_pool.get_obs_buffer();
 
         // Perform step
-        let (reward, done, info) = game
-            .step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf)
-            .map_err(|e| Status::internal(format!("Step failed: {}", e)))?;
+        let (reward, done, info) =
+            match game.step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf) {
+                Ok(result) => result,
+                Err(e) => {
+                    counter!(
+                        "engine_rpc_failures_total",
+                        1,
+                        "method" => "step",
+                        "error" => "step_failed"
+                    );
+                    return Err(Status::internal(format!("Step failed: {}", e)));
+                }
+            };
 
         drop(cache);
 
@@ -205,6 +292,12 @@ impl Engine for EngineService {
         // Return buffers to pool
         self.buffer_pool.return_state_buffer(new_state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
+
+        counter!(
+            "engine_rpc_success_total",
+            1,
+            "method" => "step"
+        );
 
         Ok(Response::new(response))
     }
