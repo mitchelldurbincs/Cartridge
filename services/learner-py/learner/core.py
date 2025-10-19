@@ -136,7 +136,7 @@ class LearnerCore:
         start_time = time.time()
         async with self._metrics.track_sample_latency():
             batch = await self._replay_client.sample()
-        self._metrics.samples_total.labels(status="ok").inc()
+        self._metrics.sample_results_total.labels(result="ok").inc()
 
         fetch_duration = time.time() - start_time
         if fetch_duration > 1.0:  # Log if fetching takes more than 1 second

@@ -52,6 +52,8 @@ class ReplayClient:
         self._channel: grpc.aio.Channel | None = None
         self._stub = None
         self._logger = structlog.get_logger(__name__)
+        if self._metrics is not None:
+            self._metrics.replay_queue_depth.set(0)
 
     async def __aenter__(self) -> "ReplayClient":
         await self.start()
@@ -96,11 +98,15 @@ class ReplayClient:
             self._logger.debug("Cleared queued batches during shutdown", cleared_count=queued_items)
 
         self._logger.info("Replay client stopped successfully")
+        if self._metrics is not None:
+            self._metrics.replay_queue_depth.set(0)
 
     async def sample(self) -> TransitionBatch:
         """Return the next available batch, waiting for prefetch if necessary."""
 
-        return await self._queue.get()
+        batch = await self._queue.get()
+        self._record_queue_depth_metric()
+        return batch
 
     def queue_metrics(self) -> tuple[int | None, int | None]:
         """Return current depth and capacity for the prefetch queue."""
@@ -131,6 +137,7 @@ class ReplayClient:
                         batch = await self._invoke_sampler()
                         await self._queue.put(batch)
                         consecutive_failures = 0  # Reset on success
+                        self._record_queue_depth_metric()
 
                         # Log successful prefetch occasionally
                         if hasattr(batch, 'observations') and len(batch.observations) > 0:
@@ -149,14 +156,18 @@ class ReplayClient:
             except (RetryError, RuntimeError) as exc:
                 consecutive_failures += 1
                 self._logger.error(
-                    "Sample fetch failed (attempt %d/%d): %s",
-                    consecutive_failures, max_consecutive_failures, exc
+                    "Sample fetch failed",
+                    attempt=consecutive_failures,
+                    max_attempts=max_consecutive_failures,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
                 )
 
                 if consecutive_failures >= max_consecutive_failures:
                     self._logger.critical(
-                        "Too many consecutive failures (%d), stopping prefetch loop",
-                        consecutive_failures
+                        "Prefetch loop exceeded consecutive failure threshold",
+                        consecutive_failures=consecutive_failures,
+                        max_consecutive_failures=max_consecutive_failures,
                     )
                     raise RuntimeError("Prefetch loop failed after too many consecutive errors") from exc
 
@@ -165,7 +176,11 @@ class ReplayClient:
 
             except Exception as exc:
                 # Unexpected errors should stop the prefetch loop
-                self._logger.critical("Unexpected error in prefetch loop: %s", exc)
+                self._logger.critical(
+                    "Unexpected error in prefetch loop",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
                 raise
 
     async def _invoke_sampler(self) -> TransitionBatch:
@@ -195,7 +210,11 @@ class ReplayClient:
                 self._channel = grpc.aio.insecure_channel(self._config.endpoint)  # type: ignore[attr-defined]
 
             self._stub = replay_pb2_grpc.ReplayStub(self._channel)
-            self._logger.debug("gRPC connection established to %s", self._config.endpoint)
+            self._logger.debug(
+                "gRPC connection established",
+                endpoint=self._config.endpoint,
+                tls_enabled=self._config.tls_enabled,
+            )
 
     async def _close_channel(self) -> None:
         """Close the gRPC channel if it exists."""
@@ -203,8 +222,12 @@ class ReplayClient:
             try:
                 await self._channel.close()
                 self._logger.debug("gRPC channel closed")
-            except Exception as e:
-                self._logger.warning("Error closing gRPC channel: %s", e)
+            except Exception as exc:
+                self._logger.warning(
+                    "Error closing gRPC channel",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
             finally:
                 self._channel = None
                 self._stub = None
@@ -229,35 +252,61 @@ class ReplayClient:
 
                 try:
                     if self._metrics is not None:
-                        self._metrics.samples_total.labels(status="attempt").inc()
+                        self._metrics.sample_attempts_total.inc()
 
                     response = await self._stub.Sample(request)
 
                     if self._metrics is not None:
-                        self._metrics.samples_total.labels(status="success").inc()
+                        self._metrics.sample_results_total.labels(result="success").inc()
 
-                    self._logger.debug("Successfully sampled %d transitions", len(list(response.transitions)))
+                    self._logger.debug(
+                        "Sampled transitions successfully",
+                        transition_count=len(list(response.transitions)),
+                    )
                     return response
 
                 except grpc.RpcError as e:
                     if self._metrics is not None:
-                        self._metrics.samples_total.labels(status="error").inc()
+                        self._metrics.sample_results_total.labels(result="error").inc()
 
                     # Close connection on RPC errors to force reconnection on retry
                     await self._close_channel()
 
                     # Log different error types
                     if e.code() == grpc.StatusCode.UNAVAILABLE:
-                        self._logger.warning("Replay service unavailable, will retry: %s", e)
+                        self._logger.warning(
+                            "Replay service unavailable, will retry",
+                            status_code=e.code().name,
+                            details=e.details(),
+                        )
                     elif e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                        self._logger.warning("Replay request timeout, will retry: %s", e)
+                        self._logger.warning(
+                            "Replay request timeout, will retry",
+                            status_code=e.code().name,
+                            details=e.details(),
+                        )
                     else:
-                        self._logger.error("gRPC sampling failed: %s", e)
+                        self._logger.error(
+                            "gRPC sampling failed",
+                            status_code=e.code().name if e.code() is not None else None,
+                            details=e.details(),
+                        )
 
                     raise  # Re-raise for retry logic
 
         # This should never be reached due to reraise=True
         raise RuntimeError("Retry logic failed unexpectedly")
+
+    def _record_queue_depth_metric(self) -> None:
+        if self._metrics is None:
+            return
+
+        try:
+            depth = self._queue.qsize()
+        except NotImplementedError:  # pragma: no cover - implementation detail
+            return
+
+        self._metrics.replay_queue_depth.set(depth)
 
 
 __all__ = ["ReplayClient", "SamplerFn"]

@@ -10,6 +10,7 @@ import aiohttp
 import structlog
 
 from .config import ControlConfig
+from .metrics import MetricsRegistry
 
 
 @dataclass(slots=True)
@@ -27,13 +28,14 @@ class HeartbeatPayload:
 class ControlClient:
     """Thin wrapper around the orchestrator HTTP API."""
 
-    def __init__(self, config: ControlConfig) -> None:
+    def __init__(self, config: ControlConfig, *, metrics: MetricsRegistry | None = None) -> None:
         self._config = config
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
         self._logger = structlog.get_logger(__name__)
         self._heartbeat_count = 0
         self._last_heartbeat_error = None
+        self._metrics = metrics
 
         self._logger.info(
             "ControlClient initialized",
@@ -41,6 +43,8 @@ class ControlClient:
             run_id=config.run_id,
             heartbeat_interval=config.heartbeat_interval_seconds
         )
+        if self._metrics is not None:
+            self._metrics.heartbeat_success.set(0)
 
     async def ensure_session(self) -> aiohttp.ClientSession:
         """Return an ``aiohttp`` session, creating one on first use.
@@ -106,6 +110,9 @@ class ControlClient:
                         self._logger.info("Recovered from heartbeat error")
                         self._last_heartbeat_error = None
 
+                if self._metrics is not None:
+                    self._metrics.heartbeat_success.set(1)
+
         except asyncio.TimeoutError as exc:
             self._last_heartbeat_error = str(exc)
             self._logger.error(
@@ -115,6 +122,8 @@ class ControlClient:
                 url=url,
                 timeout_seconds=10
             )
+            if self._metrics is not None:
+                self._metrics.heartbeat_success.set(0)
             raise
 
         except aiohttp.ClientResponseError as exc:
@@ -127,6 +136,8 @@ class ControlClient:
                 status_code=exc.status,
                 message=exc.message
             )
+            if self._metrics is not None:
+                self._metrics.heartbeat_success.set(0)
             raise
 
         except aiohttp.ClientConnectionError as exc:
@@ -138,6 +149,8 @@ class ControlClient:
                 url=url,
                 error=str(exc),
             )
+            if self._metrics is not None:
+                self._metrics.heartbeat_success.set(0)
             await self._reset_session()
 
         except aiohttp.ClientError as exc:
@@ -149,6 +162,8 @@ class ControlClient:
                 url=url,
                 error=str(exc),
             )
+            if self._metrics is not None:
+                self._metrics.heartbeat_success.set(0)
             await self._reset_session()
             raise
 
@@ -161,6 +176,8 @@ class ControlClient:
                 url=url,
                 error=str(exc)
             )
+            if self._metrics is not None:
+                self._metrics.heartbeat_success.set(0)
             raise
 
     async def close(self) -> None:
