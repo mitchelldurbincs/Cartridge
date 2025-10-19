@@ -158,6 +158,27 @@ class TestReplayConversion:
         assert batch.actions.shape == (1, 1)
         assert batch.actions[0, 0].item() == 5
 
+    def test_float_actions_preserve_precision(self):
+        """Continuous actions should remain floating point tensors without truncation."""
+
+        obs_data = struct.pack('ff', 1.0, 2.0)
+        action_data = struct.pack('f', 0.75)
+
+        transition = MockTransition(
+            observation=obs_data,
+            action=action_data,
+            reward=1.0,
+            done=False,
+            metadata={'log_prob': '-0.5', 'value': '2.3'}
+        )
+
+        response = MockSampleResponse([transition])
+        batch = sample_response_to_batch(response)
+
+        assert batch.actions.dtype == torch.float32
+        assert batch.actions.shape == (1, 1)
+        assert torch.allclose(batch.actions[0], torch.tensor([0.75], dtype=torch.float32))
+
 
 class TestReplayClientIntegration:
     """Test ReplayClient integration with mocked gRPC."""
