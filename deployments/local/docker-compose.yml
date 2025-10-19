@@ -71,7 +71,7 @@ services:
     command: ["--config", "/config/learner.yaml"]
     volumes:
       - learner-checkpoints:/checkpoints
-      - ../configs/runtime/local/learner.yaml:/config/learner.yaml:ro
+      - ../../configs/runtime/local/learner.yaml:/config/learner.yaml:ro
     depends_on:
       - replay
       - orchestrator
