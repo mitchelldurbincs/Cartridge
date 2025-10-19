@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -35,7 +36,7 @@ func main() {
 		shutdownTimeout time.Duration
 	)
 
-	defaultAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	defaultAddr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	flag.StringVar(&addr, "addr", defaultAddr, "HTTP listen address")
 	flag.DurationVar(&readTimeout, "read-timeout", cfg.Server.ReadTimeout, "HTTP read timeout")
 	flag.DurationVar(&writeTimeout, "write-timeout", cfg.Server.WriteTimeout, "HTTP write timeout")
