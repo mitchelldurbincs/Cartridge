@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,9 +23,27 @@ import (
 )
 
 func main() {
+	portDefault := 8080
+	if envPort := os.Getenv("REPLAY_PORT"); envPort != "" {
+		if parsed, err := strconv.Atoi(envPort); err == nil {
+			portDefault = parsed
+		} else {
+			log.Printf("Invalid REPLAY_PORT %q, using default %d", envPort, portDefault)
+		}
+	}
+
+	maxSizeDefault := uint64(100000)
+	if envMax := os.Getenv("REPLAY_MAX_SIZE"); envMax != "" {
+		if parsed, err := strconv.ParseUint(envMax, 10, 64); err == nil {
+			maxSizeDefault = parsed
+		} else {
+			log.Printf("Invalid REPLAY_MAX_SIZE %q, using default %d", envMax, maxSizeDefault)
+		}
+	}
+
 	var (
-		port    = flag.Int("port", 8080, "gRPC server port")
-		maxSize = flag.Uint64("max-size", 100000, "Maximum number of transitions to store")
+		port    = flag.Int("port", portDefault, "gRPC server port")
+		maxSize = flag.Uint64("max-size", maxSizeDefault, "Maximum number of transitions to store")
 	)
 	flag.Parse()
 

@@ -9,7 +9,7 @@ This document provides a comprehensive analysis of configuration management acro
 ### Existing Configuration Patterns
 
 #### 1. **Learner Service (Python)** ✅ Well-Configured
-- **Location**: `deployments/local/config/learner.yaml`
+- **Location**: `configs/runtime/local/learner.yaml`
 - **Pattern**: YAML-based configuration with Pydantic validation
 - **Strengths**:
   - Comprehensive configuration covering all aspects (replay, training, algorithm, checkpoints, weights, control)
