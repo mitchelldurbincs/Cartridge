@@ -25,6 +25,17 @@ services:
       context: ../..
       dockerfile: services/orchestrator-go/Dockerfile
     image: cartridge/orchestrator-go:local
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      READ_TIMEOUT: 30s
+      WRITE_TIMEOUT: 30s
+      SHUTDOWN_TIMEOUT: 30s
+      NATS_URL: nats://localhost:4222
+      NATS_SUBJECT: run-status
+      HEALTH_CHECK_INTERVAL: 15s
+      HEARTBEAT_STALE_AFTER: 45s
+      HEARTBEAT_UNRESPONSIVE: 135s
     ports:
       - "8080:8080"
     depends_on:
@@ -60,7 +71,7 @@ services:
     command: ["--config", "/config/learner.yaml"]
     volumes:
       - learner-checkpoints:/checkpoints
-      - ./config/learner.yaml:/config/learner.yaml:ro
+      - ../configs/runtime/local/learner.yaml:/config/learner.yaml:ro
     depends_on:
       - replay
       - orchestrator

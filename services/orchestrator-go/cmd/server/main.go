@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/cartridge/orchestrator/internal/config"
 	"github.com/cartridge/orchestrator/internal/events"
 	httpServer "github.com/cartridge/orchestrator/internal/http"
 	"github.com/cartridge/orchestrator/internal/metrics"
@@ -19,11 +21,26 @@ import (
 )
 
 func main() {
-	var addr string
-	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
-	flag.Parse()
-
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to load orchestrator config")
+	}
+
+	var (
+		addr            string
+		readTimeout     time.Duration
+		writeTimeout    time.Duration
+		shutdownTimeout time.Duration
+	)
+
+	defaultAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	flag.StringVar(&addr, "addr", defaultAddr, "HTTP listen address")
+	flag.DurationVar(&readTimeout, "read-timeout", cfg.Server.ReadTimeout, "HTTP read timeout")
+	flag.DurationVar(&writeTimeout, "write-timeout", cfg.Server.WriteTimeout, "HTTP write timeout")
+	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", cfg.Server.ShutdownTimeout, "Graceful shutdown timeout")
+	flag.Parse()
 
 	store := storage.NewMemoryStore()
 	publisher := events.NoopPublisher{}
@@ -54,8 +71,8 @@ func main() {
 		Addr:              addr,
 		Handler:           h.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 	}
 
 	done := make(chan struct{})
@@ -72,7 +89,7 @@ func main() {
 	<-sig
 	logger.Info().Msg("shutdown signal received")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error().Err(err).Msg("graceful shutdown failed")
