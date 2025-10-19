@@ -64,7 +64,8 @@ pub fn register_game(env_id: String, factory: GameFactory) {
     if registry.contains_key(&env_id) {
         warn!(env_id = %env_id, "Overriding existing game registration");
     }
-    counter!("engine_registry_registrations_total", 1, "env_id" => env_id.as_str());
+    let env_id_label = env_id.clone();
+    counter!("engine_registry_registrations_total", 1, "env_id" => env_id_label);
     registry.insert(env_id, factory);
     gauge!("engine_registry_games", registry.len() as f64);
 }
