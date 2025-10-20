@@ -31,7 +31,7 @@ checkpoints:
 weights:
   backend: redis
   endpoint: redis://redis:6379/0
-  channel: learner_weights
+  channel: weights:updates
 
 control:
   orchestrator_endpoint: http://orchestrator:8080/api/v1
