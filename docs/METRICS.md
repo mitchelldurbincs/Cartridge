@@ -35,6 +35,27 @@ health monitoring. All collectors are registered with the shared Prometheus regi
 | `orchestrator_run_state_transitions_total` | Counter | `from`, `to` | Counts run state transitions observed by the orchestrator state machine. | Incremented when recording run transitions in `service/orchestrator.go`.
 | `orchestrator_health_events_total` | Counter | `type`, `severity` | Tracks emitted health monitoring events such as stale or unresponsive heartbeats. | Health monitor callbacks `markStale`/`markUnresponsive` in `health/monitor.go`.
 
+## Engine Service (`services/engine-rust`)
+
+The engine exposes Prometheus metrics for registry activity, RPC lifecycles, cache
+behaviour, and buffer pool health via the shared `metrics` crate.
+
+| Metric | Type | Labels | Description | Emitted from |
+| --- | --- | --- | --- | --- |
+| `engine_registry_registrations_total` | Counter | `env_id` | Counts game registrations into the global registry. | `register_game` in `engine-core/src/registry.rs`. |
+| `engine_registry_games` | Gauge | _none_ | Current number of games registered with the engine. | Updated in `engine-core/src/registry.rs` and `engine-server/src/registry_init.rs`. |
+| `engine_rpc_requests_total` | Counter | `method` | Tracks incoming RPC requests by method. | Beginning of each gRPC handler in `engine-server/src/service.rs`. |
+| `engine_rpc_success_total` | Counter | `method` | Successful RPC responses by method. | Success paths in `engine-server/src/service.rs`. |
+| `engine_rpc_failures_total` | Counter | `method`, `error` | Categorizes RPC failures by method and error condition. | Error paths in `engine-server/src/service.rs`. |
+| `engine_rpc_latency_seconds` | Histogram | `method` | End-to-end latency for each RPC method. | Recorded just before returning from handlers in `engine-server/src/service.rs`. |
+| `engine_game_cache_hits_total` | Counter | `method` | Cache hits when reusing game instances per RPC method. | Cache lookup in `reset`/`step` handlers in `engine-server/src/service.rs`. |
+| `engine_game_cache_misses_total` | Counter | `method` | Cache misses when a game instance must be created. | Cache miss handling in `reset`/`step` handlers in `engine-server/src/service.rs`. |
+| `engine_game_cache_entries` | Gauge | _none_ | Snapshot of cached game instances. | After cache access in `reset` and `step` within `engine-server/src/service.rs`. |
+| `engine_buffer_pool_borrows_total` | Counter | `buffer` (`state`, `obs`, `action`) | Counts buffer borrows from the pool by type. | `get_*_buffer` methods in `engine-server/src/buffers.rs`. |
+| `engine_buffer_pool_returns_total` | Counter | `buffer` (`state`, `obs`, `action`) | Counts buffer returns to the pool by type. | `return_*_buffer` methods in `engine-server/src/buffers.rs`. |
+| `engine_buffer_pool_available` | Gauge | `buffer` (`state`, `obs`, `action`) | Available buffer count per pool. | Recorded whenever buffer availability changes in `engine-server/src/buffers.rs`. |
+
+
 ## Adding New Metrics
 
 When adding instrumentation to a service, prefer updating the existing collector class
