@@ -1,22 +1,33 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[command(name = "actor")]
 #[command(about = "Cartridge RL Actor Service")]
-#[command(long_about = "Actor service that runs game episodes and collects experience data.
+#[command(
+    long_about = "Actor service that runs game episodes and collects experience data.
 
 The actor connects to the engine service to simulate games and sends
-transition data to the replay service for training.")]
+transition data to the replay service for training."
+)]
 pub struct Config {
     /// Engine service address
-    #[arg(long, env = "ACTOR_ENGINE_ADDR", default_value = "http://localhost:50051")]
+    #[arg(
+        long,
+        env = "ACTOR_ENGINE_ADDR",
+        default_value = "http://localhost:50051"
+    )]
     pub engine_addr: String,
 
     /// Replay service address
-    #[arg(long, env = "ACTOR_REPLAY_ADDR", default_value = "http://localhost:8080")]
+    #[arg(
+        long,
+        env = "ACTOR_REPLAY_ADDR",
+        default_value = "http://localhost:8080"
+    )]
     pub replay_addr: String,
 
     /// Unique actor identifier
@@ -46,6 +57,10 @@ pub struct Config {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "ACTOR_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+
+    /// Optional Prometheus metrics exporter bind address (e.g. 0.0.0.0:9002)
+    #[arg(long, env = "ACTOR_METRICS_ADDR")]
+    pub metrics_addr: Option<String>,
 }
 
 impl Config {
@@ -68,6 +83,11 @@ impl Config {
 
         if self.flush_interval_secs == 0 {
             return Err(anyhow!("flush_interval_secs must be greater than 0"));
+        }
+
+        if let Some(addr) = &self.metrics_addr {
+            addr.parse::<SocketAddr>()
+                .map_err(|e| anyhow!("invalid metrics bind address '{}': {}", addr, e))?;
         }
 
         Ok(())
