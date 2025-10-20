@@ -1,18 +1,15 @@
 use anyhow::{anyhow, Result};
+use metrics::{counter, gauge, histogram};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, timeout};
 use tonic::{transport::Channel, Request};
 use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::policy::{Policy, RandomPolicy};
-use crate::proto::engine::v1::{
-    engine_client::EngineClient, EngineId, ResetRequest, StepRequest,
-};
-use crate::proto::replay::v1::{
-    replay_client::ReplayClient, StoreBatchRequest, Transition,
-};
+use crate::proto::engine::v1::{engine_client::EngineClient, EngineId, ResetRequest, StepRequest};
+use crate::proto::replay::v1::{replay_client::ReplayClient, StoreBatchRequest, Transition};
 
 pub struct Actor {
     config: Config,
@@ -31,14 +28,26 @@ impl Actor {
         let engine_channel = tonic::transport::Endpoint::new(config.engine_addr.clone())?
             .connect()
             .await
-            .map_err(|e| anyhow!("Failed to connect to engine at {}: {}", config.engine_addr, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to connect to engine at {}: {}",
+                    config.engine_addr,
+                    e
+                )
+            })?;
 
         // Connect to replay service
         info!("Connecting to replay service at {}", config.replay_addr);
         let replay_channel = tonic::transport::Endpoint::new(config.replay_addr.clone())?
             .connect()
             .await
-            .map_err(|e| anyhow!("Failed to connect to replay at {}: {}", config.replay_addr, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to connect to replay at {}: {}",
+                    config.replay_addr,
+                    e
+                )
+            })?;
 
         let mut engine_client = EngineClient::new(engine_channel);
         let replay_client = ReplayClient::new(replay_channel);
@@ -87,6 +96,12 @@ impl Actor {
         // Setup flush timer for partial batches
         let mut flush_timer = interval(self.config.flush_interval());
 
+        gauge!(
+            "actor_transitions_buffered",
+            0.0,
+            "env_id" => self.config.env_id.clone()
+        );
+
         loop {
             // Check shutdown signal
             if *self.shutdown_signal.lock().unwrap() {
@@ -115,10 +130,35 @@ impl Actor {
                     }
 
                     // Run an episode
+                    let episode_start = Instant::now();
+                    let env_label = self.config.env_id.clone();
                     match self.run_episode().await {
-                        Ok(_) => {
+                        Ok((steps, total_reward)) => {
                             let mut count = self.episode_count.lock().unwrap();
                             *count += 1;
+                            let duration = episode_start.elapsed().as_secs_f64();
+                            counter!(
+                                "actor_episode_results_total",
+                                1,
+                                "result" => "success",
+                                "env_id" => env_label.clone()
+                            );
+                            histogram!(
+                                "actor_episode_duration_seconds",
+                                duration,
+                                "result" => "success",
+                                "env_id" => env_label.clone()
+                            );
+                            gauge!(
+                                "actor_episode_last_steps",
+                                steps as f64,
+                                "env_id" => env_label.clone()
+                            );
+                            gauge!(
+                                "actor_episode_last_return",
+                                total_reward as f64,
+                                "env_id" => env_label.clone()
+                            );
                             if *count % 10 == 0 {
                                 info!("Completed {} episodes", *count);
                             }
@@ -126,6 +166,19 @@ impl Actor {
                         Err(e) => {
                             let count = *self.episode_count.lock().unwrap();
                             error!("Episode {} failed: {}", count + 1, e);
+                            let duration = episode_start.elapsed().as_secs_f64();
+                            counter!(
+                                "actor_episode_results_total",
+                                1,
+                                "result" => "error",
+                                "env_id" => env_label
+                            );
+                            histogram!(
+                                "actor_episode_duration_seconds",
+                                duration,
+                                "result" => "error",
+                                "env_id" => self.config.env_id.clone()
+                            );
                             // Continue with next episode rather than stopping
                         }
                     }
@@ -144,7 +197,7 @@ impl Actor {
         info!("Shutdown signal set");
     }
 
-    async fn run_episode(&self) -> Result<()> {
+    async fn run_episode(&self) -> Result<(u32, f32)> {
         let episode_count = *self.episode_count.lock().unwrap();
 
         // Reset the game
@@ -166,7 +219,8 @@ impl Actor {
         .map_err(|e| anyhow!("Failed to reset game: {}", e))?;
 
         let reset_data = reset_response.into_inner();
-        let episode_id = format!("{}-ep-{}-{}",
+        let episode_id = format!(
+            "{}-ep-{}-{}",
             self.config.actor_id,
             episode_count,
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
@@ -175,6 +229,8 @@ impl Actor {
         let mut current_state = reset_data.state;
         let mut current_obs = reset_data.obs;
         let mut step_number = 0u32;
+        let mut steps_taken = 0u32;
+        let mut total_reward = 0.0f32;
 
         debug!("Started episode {}", episode_id);
 
@@ -182,7 +238,8 @@ impl Actor {
             // Select action using policy
             let action = {
                 let mut policy = self.policy.lock().unwrap();
-                policy.select_action(&current_obs)
+                policy
+                    .select_action(&current_obs)
                     .map_err(|e| anyhow!("Failed to select action: {}", e))?
             };
 
@@ -205,6 +262,9 @@ impl Actor {
             .map_err(|e| anyhow!("Failed to step environment: {}", e))?;
 
             let step_data = step_response.into_inner();
+
+            total_reward += step_data.reward;
+            steps_taken += 1;
 
             // Create transition
             let transition = Transition {
@@ -230,6 +290,11 @@ impl Actor {
                 buffer.push(transition);
 
                 // Flush buffer if full
+                gauge!(
+                    "actor_transitions_buffered",
+                    buffer.len() as f64,
+                    "env_id" => self.config.env_id.clone()
+                );
                 if buffer.len() >= self.config.batch_size {
                     drop(buffer); // Release lock before async call
                     self.flush_buffer().await?;
@@ -253,29 +318,71 @@ impl Actor {
             step_number += 1;
         }
 
-        Ok(())
+        Ok((steps_taken, total_reward))
     }
 
     async fn flush_buffer(&self) -> Result<()> {
         let transitions = {
             let mut buffer = self.transition_buffer.lock().unwrap();
             if buffer.is_empty() {
+                gauge!(
+                    "actor_transitions_buffered",
+                    0.0,
+                    "env_id" => self.config.env_id.clone()
+                );
                 return Ok(());
             }
             std::mem::take(&mut *buffer)
         };
 
-        debug!("Flushing {} transitions to replay service", transitions.len());
+        let env_label = self.config.env_id.clone();
+        let count = transitions.len();
 
-        let request = Request::new(StoreBatchRequest { transitions });
+        debug!("Flushing {} transitions to replay service", count);
 
-        self.replay_client
-            .clone()
-            .store_batch(request)
-            .await
-            .map_err(|e| anyhow!("Failed to store batch: {}", e))?;
+        let request = Request::new(StoreBatchRequest {
+            transitions: transitions.clone(),
+        });
 
-        Ok(())
+        match self.replay_client.clone().store_batch(request).await {
+            Ok(_) => {
+                counter!(
+                    "actor_flush_results_total",
+                    1,
+                    "result" => "success",
+                    "env_id" => env_label.clone()
+                );
+                counter!(
+                    "actor_transitions_flushed_total",
+                    count as u64,
+                    "env_id" => env_label.clone()
+                );
+                gauge!(
+                    "actor_transitions_buffered",
+                    0.0,
+                    "env_id" => env_label
+                );
+                Ok(())
+            }
+            Err(e) => {
+                counter!(
+                    "actor_flush_results_total",
+                    1,
+                    "result" => "error",
+                    "env_id" => self.config.env_id.clone()
+                );
+                let mut buffer = self.transition_buffer.lock().unwrap();
+                buffer.splice(0..0, transitions.into_iter());
+                let buffer_len = buffer.len();
+                drop(buffer);
+                gauge!(
+                    "actor_transitions_buffered",
+                    buffer_len as f64,
+                    "env_id" => self.config.env_id.clone()
+                );
+                Err(anyhow!("Failed to store batch: {}", e))
+            }
+        }
     }
 }
 
@@ -286,10 +393,9 @@ mod tests {
     use crate::proto::replay::v1::replay_client::ReplayClient;
     use crate::proto::replay::v1::replay_server::{Replay, ReplayServer};
     use crate::proto::replay::v1::{
-        ClearRequest, ClearResponse, GetStatsRequest, SampleRequest, SampleResponse,
-        StatsResponse, StoreBatchRequest, StoreBatchResponse, StoreTransitionRequest,
-        StoreTransitionResponse, Transition, UpdatePrioritiesRequest,
-        UpdatePrioritiesResponse,
+        ClearRequest, ClearResponse, GetStatsRequest, SampleRequest, SampleResponse, StatsResponse,
+        StoreBatchRequest, StoreBatchResponse, StoreTransitionRequest, StoreTransitionResponse,
+        Transition, UpdatePrioritiesRequest, UpdatePrioritiesResponse,
     };
     use std::collections::HashMap;
     use std::net::TcpListener;
@@ -309,7 +415,9 @@ mod tests {
             &self,
             _request: tonic::Request<StoreTransitionRequest>,
         ) -> Result<Response<StoreTransitionResponse>, Status> {
-            Err(Status::unimplemented("store_transition not implemented in tests"))
+            Err(Status::unimplemented(
+                "store_transition not implemented in tests",
+            ))
         }
 
         async fn store_batch(
@@ -406,6 +514,7 @@ mod tests {
                 batch_size: 2,
                 flush_interval_secs: 1,
                 log_level: "info".into(),
+                metrics_addr: None,
             },
             engine_client,
             replay_client,

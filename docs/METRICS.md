@@ -55,6 +55,21 @@ behaviour, and buffer pool health via the shared `metrics` crate.
 | `engine_buffer_pool_returns_total` | Counter | `buffer` (`state`, `obs`, `action`) | Counts buffer returns to the pool by type. | `return_*_buffer` methods in `engine-server/src/buffers.rs`. |
 | `engine_buffer_pool_available` | Gauge | `buffer` (`state`, `obs`, `action`) | Available buffer count per pool. | Recorded whenever buffer availability changes in `engine-server/src/buffers.rs`. |
 
+## Actor Service (`services/actor-rust`)
+
+The actor runs inference loops against the engine, buffers experience locally, and
+streams batches to replay. Metrics cover episode lifecycles and replay flush health.
+
+| Metric | Type | Labels | Description | Emitted from |
+| --- | --- | --- | --- | --- |
+| `actor_episode_results_total` | Counter | `result`, `env_id` | Counts episodes by outcome (`success` or `error`). | Success/error paths in `Actor::run`. |
+| `actor_episode_duration_seconds` | Histogram | `result`, `env_id` | Measures end-to-end duration of each episode with outcome segmentation. | Recorded after each `run_episode` invocation in `Actor::run`. |
+| `actor_episode_last_steps` | Gauge | `env_id` | Number of steps in the most recently completed episode. | Success path in `Actor::run`. |
+| `actor_episode_last_return` | Gauge | `env_id` | Total accumulated reward from the most recent successful episode. | Success path in `Actor::run`. |
+| `actor_transitions_buffered` | Gauge | `env_id` | Current number of transitions awaiting flush to replay. | Updated when buffering transitions and after flushes in `Actor::run_episode`/`flush_buffer`. |
+| `actor_transitions_flushed_total` | Counter | `env_id` | Counts individual transitions successfully delivered to replay. | Success path in `Actor::flush_buffer`. |
+| `actor_flush_results_total` | Counter | `result`, `env_id` | Tracks replay flush attempts by result (`success` or `error`). | Success/error branches in `Actor::flush_buffer`. |
+
 
 ## Adding New Metrics
 
