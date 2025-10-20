@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/cartridge/replay/internal/metrics"
 	"github.com/cartridge/replay/internal/storage"
 	replayv1 "github.com/cartridge/replay/pkg/proto/replay/v1"
 )
@@ -15,6 +16,7 @@ import (
 type ReplayService struct {
 	replayv1.UnimplementedReplayServer
 	backend storage.Backend
+	metrics *metrics.Collector
 }
 
 // NewReplayService creates a new ReplayService
@@ -24,9 +26,28 @@ func NewReplayService(backend storage.Backend) *ReplayService {
 	}
 }
 
+// WithMetrics wires a metrics collector into the replay service.
+func (s *ReplayService) WithMetrics(collector *metrics.Collector) {
+	s.metrics = collector
+}
+
+const (
+	storeMethodSingle = "single"
+	storeMethodBatch  = "batch"
+
+	resultSuccess         = "success"
+	resultError           = "error"
+	resultInvalidArgument = "invalid_argument"
+)
+
 // StoreTransition stores a single transition
 func (s *ReplayService) StoreTransition(ctx context.Context, req *replayv1.StoreTransitionRequest) (*replayv1.StoreTransitionResponse, error) {
+	start := time.Now()
+
 	if req.Transition == nil {
+		if s.metrics != nil {
+			s.metrics.RecordStore(storeMethodSingle, resultInvalidArgument, time.Since(start), 0)
+		}
 		return nil, status.Error(codes.InvalidArgument, "transition is required")
 	}
 
@@ -35,10 +56,17 @@ func (s *ReplayService) StoreTransition(ctx context.Context, req *replayv1.Store
 
 	// Store the transition
 	if err := s.backend.Store(ctx, transition); err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordStore(storeMethodSingle, resultError, time.Since(start), 0)
+		}
 		return &replayv1.StoreTransitionResponse{
 			Success:      false,
 			ErrorMessage: err.Error(),
 		}, nil
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordStore(storeMethodSingle, resultSuccess, time.Since(start), 1)
 	}
 
 	return &replayv1.StoreTransitionResponse{
@@ -49,7 +77,12 @@ func (s *ReplayService) StoreTransition(ctx context.Context, req *replayv1.Store
 
 // StoreBatch stores multiple transitions in a batch
 func (s *ReplayService) StoreBatch(ctx context.Context, req *replayv1.StoreBatchRequest) (*replayv1.StoreBatchResponse, error) {
+	start := time.Now()
+
 	if len(req.Transitions) == 0 {
+		if s.metrics != nil {
+			s.metrics.RecordStore(storeMethodBatch, resultSuccess, time.Since(start), 0)
+		}
 		return &replayv1.StoreBatchResponse{
 			StoredCount: 0,
 			FailedCount: 0,
@@ -65,12 +98,19 @@ func (s *ReplayService) StoreBatch(ctx context.Context, req *replayv1.StoreBatch
 	// Store the batch
 	ids, err := s.backend.StoreBatch(ctx, transitions)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordStore(storeMethodBatch, resultError, time.Since(start), len(ids))
+		}
 		return &replayv1.StoreBatchResponse{
-			StoredCount:    uint32(len(ids)),
-			FailedCount:    uint32(len(req.Transitions) - len(ids)),
-			ErrorMessages:  []string{err.Error()},
-			TransitionIds:  ids,
+			StoredCount:   uint32(len(ids)),
+			FailedCount:   uint32(len(req.Transitions) - len(ids)),
+			ErrorMessages: []string{err.Error()},
+			TransitionIds: ids,
 		}, nil
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordStore(storeMethodBatch, resultSuccess, time.Since(start), len(ids))
 	}
 
 	return &replayv1.StoreBatchResponse{
@@ -82,7 +122,12 @@ func (s *ReplayService) StoreBatch(ctx context.Context, req *replayv1.StoreBatch
 
 // Sample samples transitions for training
 func (s *ReplayService) Sample(ctx context.Context, req *replayv1.SampleRequest) (*replayv1.SampleResponse, error) {
+	start := time.Now()
+
 	if req.Config == nil {
+		if s.metrics != nil {
+			s.metrics.RecordSample(false, resultInvalidArgument, time.Since(start), 0)
+		}
 		return nil, status.Error(codes.InvalidArgument, "sample config is required")
 	}
 
@@ -92,6 +137,9 @@ func (s *ReplayService) Sample(ctx context.Context, req *replayv1.SampleRequest)
 	// Sample transitions
 	transitions, weights, err := s.backend.Sample(ctx, config)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordSample(config.Prioritized, resultError, time.Since(start), 0)
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -114,6 +162,10 @@ func (s *ReplayService) Sample(ctx context.Context, req *replayv1.SampleRequest)
 		}
 	}
 
+	if s.metrics != nil {
+		s.metrics.RecordSample(config.Prioritized, resultSuccess, time.Since(start), len(protoTransitions))
+	}
+
 	return &replayv1.SampleResponse{
 		Transitions:    protoTransitions,
 		TotalAvailable: totalAvailable,
@@ -129,10 +181,10 @@ func (s *ReplayService) GetStats(ctx context.Context, req *replayv1.GetStatsRequ
 	}
 
 	response := &replayv1.StatsResponse{
-		TotalTransitions:  stats.TotalTransitions,
-		TotalEpisodes:     stats.TotalEpisodes,
-		TransitionsByEnv:  stats.TransitionsByEnv,
-		StorageBytes:      stats.StorageBytes,
+		TotalTransitions: stats.TotalTransitions,
+		TotalEpisodes:    stats.TotalEpisodes,
+		TransitionsByEnv: stats.TransitionsByEnv,
+		StorageBytes:     stats.StorageBytes,
 	}
 
 	if stats.OldestTimestamp != nil {
@@ -148,15 +200,25 @@ func (s *ReplayService) GetStats(ctx context.Context, req *replayv1.GetStatsRequ
 // UpdatePriorities updates transition priorities for prioritized replay
 func (s *ReplayService) UpdatePriorities(ctx context.Context, req *replayv1.UpdatePrioritiesRequest) (*replayv1.UpdatePrioritiesResponse, error) {
 	if len(req.TransitionIds) != len(req.NewPriorities) {
+		if s.metrics != nil {
+			s.metrics.RecordPriorityUpdate(resultInvalidArgument, 0)
+		}
 		return nil, status.Error(codes.InvalidArgument, "transition IDs and priorities must have same length")
 	}
 
 	err := s.backend.UpdatePriorities(ctx, req.TransitionIds, req.NewPriorities)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordPriorityUpdate(resultError, 0)
+		}
 		return &replayv1.UpdatePrioritiesResponse{
 			UpdatedCount:  0,
 			ErrorMessages: []string{err.Error()},
 		}, nil
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordPriorityUpdate(resultSuccess, len(req.TransitionIds))
 	}
 
 	return &replayv1.UpdatePrioritiesResponse{
@@ -174,6 +236,9 @@ func (s *ReplayService) Clear(ctx context.Context, req *replayv1.ClearRequest) (
 
 	clearedCount, err := s.backend.Clear(ctx, req.EnvId, beforeTimestamp, req.KeepLastN)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordClear(resultError, 0)
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -188,6 +253,10 @@ func (s *ReplayService) Clear(ctx context.Context, req *replayv1.ClearRequest) (
 		} else {
 			remainingCount = stats.TotalTransitions
 		}
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordClear(resultSuccess, clearedCount)
 	}
 
 	return &replayv1.ClearResponse{
