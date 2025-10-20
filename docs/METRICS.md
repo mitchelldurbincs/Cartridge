@@ -71,6 +71,26 @@ streams batches to replay. Metrics cover episode lifecycles and replay flush hea
 | `actor_flush_results_total` | Counter | `result`, `env_id` | Tracks replay flush attempts by result (`success` or `error`). | Success/error branches in `Actor::flush_buffer`. |
 
 
+## Replay Service (`services/replay-go`)
+
+The replay service emits counters and histograms for write, sample, and housekeeping
+RPCs. Metrics are registered on startup and exported via the dedicated metrics HTTP
+server (port `9090` by default).
+
+| Metric | Type | Labels | Description | Emitted from |
+| --- | --- | --- | --- | --- |
+| `replay_store_requests_total` | Counter | `method` (`single`, `batch`), `result` (`success`, `error`, `invalid_argument`) | Counts StoreTransition and StoreBatch RPCs by method and outcome. | `RecordStore` from `StoreTransition` and `StoreBatch` in `internal/service/replay.go`. |
+| `replay_store_duration_seconds` | Histogram | `method` (`single`, `batch`) | Latency distribution for storing transitions individually or in batches. | `RecordStore` in `internal/metrics/metrics.go` called by store handlers. |
+| `replay_store_transitions_total` | Counter | `method` (`single`, `batch`) | Number of transitions persisted via StoreTransition/StoreBatch. | `RecordStore` in `internal/metrics/metrics.go`. |
+| `replay_sample_requests_total` | Counter | `prioritized` (`true`, `false`), `result` (`success`, `error`, `invalid_argument`) | Counts Sample RPCs split by prioritized sampling flag and outcome. | `RecordSample` from `Sample` in `internal/service/replay.go`. |
+| `replay_sample_duration_seconds` | Histogram | `prioritized` (`true`, `false`) | Latency distribution for sampling transitions. | `RecordSample` in `internal/metrics/metrics.go`. |
+| `replay_sample_transitions_total` | Counter | `prioritized` (`true`, `false`) | Total transitions returned by Sample RPCs. | `RecordSample` in `internal/metrics/metrics.go`. |
+| `replay_priority_updates_total` | Counter | `result` (`success`, `error`, `invalid_argument`) | Counts UpdatePriorities RPCs by outcome. | `RecordPriorityUpdate` from `UpdatePriorities` in `internal/service/replay.go`. |
+| `replay_priority_transitions_total` | Counter | _none_ | Number of transitions whose priorities were updated successfully. | `RecordPriorityUpdate` in `internal/metrics/metrics.go`. |
+| `replay_clear_requests_total` | Counter | `result` (`success`, `error`) | Counts Clear RPC invocations by outcome. | `RecordClear` from `Clear` in `internal/service/replay.go`. |
+| `replay_clear_transitions_total` | Counter | `result` (`success`, `error`) | Number of transitions removed during Clear RPCs. | `RecordClear` in `internal/metrics/metrics.go`. |
+
+
 ## Adding New Metrics
 
 When adding instrumentation to a service, prefer updating the existing collector class

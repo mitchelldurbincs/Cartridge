@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/cartridge/replay/internal/metrics"
 	"github.com/cartridge/replay/internal/service"
 	"github.com/cartridge/replay/internal/storage"
 	replayv1 "github.com/cartridge/replay/pkg/proto/replay/v1"
@@ -32,6 +34,15 @@ func main() {
 		}
 	}
 
+	metricsPortDefault := 9090
+	if envPort := os.Getenv("REPLAY_METRICS_PORT"); envPort != "" {
+		if parsed, err := strconv.Atoi(envPort); err == nil {
+			metricsPortDefault = parsed
+		} else {
+			log.Printf("Invalid REPLAY_METRICS_PORT %q, using default %d", envPort, metricsPortDefault)
+		}
+	}
+
 	maxSizeDefault := uint64(100000)
 	if envMax := os.Getenv("REPLAY_MAX_SIZE"); envMax != "" {
 		if parsed, err := strconv.ParseUint(envMax, 10, 64); err == nil {
@@ -42,8 +53,9 @@ func main() {
 	}
 
 	var (
-		port    = flag.Int("port", portDefault, "gRPC server port")
-		maxSize = flag.Uint64("max-size", maxSizeDefault, "Maximum number of transitions to store")
+		port        = flag.Int("port", portDefault, "gRPC server port")
+		maxSize     = flag.Uint64("max-size", maxSizeDefault, "Maximum number of transitions to store")
+		metricsPort = flag.Int("metrics-port", metricsPortDefault, "HTTP port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -57,8 +69,12 @@ func main() {
 		}
 	}()
 
+	// Create metrics collector
+	collector := metrics.NewCollector(nil)
+
 	// Create gRPC service
 	replayService := service.NewReplayService(backend)
+	replayService.WithMetrics(collector)
 
 	// Create gRPC server
 	server := grpc.NewServer(
@@ -77,12 +93,28 @@ func main() {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
+	metricsAddr := fmt.Sprintf(":%d", *metricsPort)
+	metricsSrv := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           collector.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	// Start server in a goroutine
 	go func() {
 		log.Printf("Replay service listening on %s", lis.Addr())
 		if err := server.Serve(lis); err != nil {
 			log.Fatalf("Failed to serve: %v", err)
 		}
+	}()
+
+	metricsDone := make(chan struct{})
+	go func() {
+		log.Printf("Replay metrics listening on %s", metricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Metrics server error: %v", err)
+		}
+		close(metricsDone)
 	}()
 
 	// Wait for interrupt signal
@@ -109,6 +141,11 @@ func main() {
 	case <-stopped:
 		log.Println("Server stopped gracefully")
 	}
+
+	if err := metricsSrv.Shutdown(ctx); err != nil {
+		log.Printf("Metrics server shutdown error: %v", err)
+	}
+	<-metricsDone
 }
 
 // loggingInterceptor logs gRPC requests
