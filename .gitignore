@@ -181,6 +181,8 @@ service-account*.json
 **/*.pb.rs
 **/*_pb2.py
 **/*_pb2_grpc.py
+!services/learner-py/learner/proto/weights/v1/weights_pb2.py
+!services/learner-py/learner/proto/weights/v1/weights_pb2_grpc.py
 
 # ==============================================================================
 # Temporary & Cache Files
@@ -209,6 +211,7 @@ temp/
 checkpoints/
 models/
 weights/
+!services/learner-py/learner/proto/weights/
 !proto/weights/
 
 # Data files

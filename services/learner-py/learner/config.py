@@ -55,9 +55,18 @@ class CheckpointConfig(BaseModel):
 class WeightPublisherConfig(BaseModel):
     """Settings for distributing policy weights to actors."""
 
-    backend: str = Field("redis", description="Distribution mechanism identifier")
+    backend: str = Field("grpc", description="Distribution mechanism identifier")
     endpoint: str = Field(..., description="Endpoint for the weight sink")
-    channel: str = Field(..., description="Channel/key used when publishing new weights")
+    channel: str | None = Field(
+        None,
+        description="Channel/key used when publishing new weights for Redis backends",
+    )
+
+    @model_validator(mode="after")
+    def _validate_backend(self) -> "WeightPublisherConfig":
+        if self.backend == "redis" and not self.channel:
+            raise ValueError("'channel' must be set when using the redis weight backend")
+        return self
 
 
 class ControlConfig(BaseModel):
