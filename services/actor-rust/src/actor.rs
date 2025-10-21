@@ -465,6 +465,58 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct FailingReplay;
+
+    #[tonic::async_trait]
+    impl Replay for FailingReplay {
+        async fn store_transition(
+            &self,
+            _request: tonic::Request<StoreTransitionRequest>,
+        ) -> Result<Response<StoreTransitionResponse>, Status> {
+            Err(Status::unimplemented(
+                "store_transition not implemented in tests",
+            ))
+        }
+
+        async fn store_batch(
+            &self,
+            _request: tonic::Request<StoreBatchRequest>,
+        ) -> Result<Response<StoreBatchResponse>, Status> {
+            Err(Status::internal("forced failure"))
+        }
+
+        async fn sample(
+            &self,
+            _request: tonic::Request<SampleRequest>,
+        ) -> Result<Response<SampleResponse>, Status> {
+            Err(Status::unimplemented("sample not implemented in tests"))
+        }
+
+        async fn get_stats(
+            &self,
+            _request: tonic::Request<GetStatsRequest>,
+        ) -> Result<Response<StatsResponse>, Status> {
+            Err(Status::unimplemented("get_stats not implemented in tests"))
+        }
+
+        async fn update_priorities(
+            &self,
+            _request: tonic::Request<UpdatePrioritiesRequest>,
+        ) -> Result<Response<UpdatePrioritiesResponse>, Status> {
+            Err(Status::unimplemented(
+                "update_priorities not implemented in tests",
+            ))
+        }
+
+        async fn clear(
+            &self,
+            _request: tonic::Request<ClearRequest>,
+        ) -> Result<Response<ClearResponse>, Status> {
+            Err(Status::unimplemented("clear not implemented in tests"))
+        }
+    }
+
     struct TestPolicy;
 
     impl Policy for TestPolicy {
@@ -563,6 +615,92 @@ mod tests {
         assert_eq!(received[1], second_transition);
 
         drop(received);
+        shutdown_tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_restores_queue_on_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ReplayServer::new(FailingReplay))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let endpoint = Endpoint::new(format!("http://{}", addr)).unwrap();
+        let replay_client = ReplayClient::new(endpoint.connect_lazy());
+
+        let engine_client = {
+            let engine_endpoint = Endpoint::new("http://127.0.0.1:50051".to_string()).unwrap();
+            EngineClient::new(engine_endpoint.connect_lazy())
+        };
+
+        let actor = Actor {
+            config: Config {
+                engine_addr: format!("http://{}", addr),
+                replay_addr: format!("http://{}", addr),
+                actor_id: "test-actor".into(),
+                env_id: "test-env".into(),
+                max_episodes: 1,
+                episode_timeout_secs: 1,
+                batch_size: 2,
+                flush_interval_secs: 1,
+                log_level: "info".into(),
+                metrics_addr: None,
+            },
+            engine_client,
+            replay_client,
+            policy: Arc::new(Mutex::new(Box::new(TestPolicy))),
+            episode_count: Arc::new(Mutex::new(0)),
+            transition_buffer: Arc::new(Mutex::new(Vec::new())),
+            shutdown_signal: Arc::new(Mutex::new(false)),
+        };
+
+        let first_transition = Transition {
+            id: "t1".into(),
+            env_id: "env".into(),
+            episode_id: "ep".into(),
+            step_number: 0,
+            state: b"state1".to_vec(),
+            action: b"action1".to_vec(),
+            next_state: b"state2".to_vec(),
+            observation: b"obs1".to_vec(),
+            next_observation: b"obs2".to_vec(),
+            reward: 1.0,
+            done: false,
+            priority: 1.0,
+            timestamp: 1,
+            metadata: HashMap::new(),
+        };
+        let mut second_transition = first_transition.clone();
+        second_transition.id = "t2".into();
+        second_transition.step_number = 1;
+
+        {
+            let mut buffer = actor.transition_buffer.lock().unwrap();
+            buffer.push(first_transition.clone());
+            buffer.push(second_transition.clone());
+        }
+
+        let result = actor.flush_buffer().await;
+        assert!(result.is_err(), "flush should fail when replay returns error");
+
+        let buffer = actor.transition_buffer.lock().unwrap();
+        assert_eq!(buffer.len(), 2, "buffer should retain transitions after failure");
+        assert_eq!(buffer[0], first_transition);
+        assert_eq!(buffer[1], second_transition);
+        drop(buffer);
+
         shutdown_tx.send(()).unwrap();
         server_handle.await.unwrap();
     }
