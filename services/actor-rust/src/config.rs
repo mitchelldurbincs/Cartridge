@@ -101,3 +101,55 @@ impl Config {
         Duration::from_secs(self.flush_interval_secs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> Config {
+        Config {
+            engine_addr: "http://localhost:50051".into(),
+            replay_addr: "http://localhost:8080".into(),
+            actor_id: "actor".into(),
+            env_id: "env".into(),
+            max_episodes: 1,
+            episode_timeout_secs: 30,
+            batch_size: 4,
+            flush_interval_secs: 5,
+            log_level: "info".into(),
+            metrics_addr: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_configuration() {
+        let cfg = base_config();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_actor_id() {
+        let mut cfg = base_config();
+        cfg.actor_id.clear();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("actor_id"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_batch_size() {
+        let mut cfg = base_config();
+        cfg.batch_size = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("batch_size"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_metrics_address() {
+        let mut cfg = base_config();
+        cfg.metrics_addr = Some("not-an-addr".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("invalid metrics bind address"));
+    }
+}
