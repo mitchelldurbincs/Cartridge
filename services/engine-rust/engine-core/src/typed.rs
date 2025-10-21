@@ -61,23 +61,24 @@ pub struct Capabilities {
 /// # use engine_core::typed::*;
 /// # use rand_chacha::ChaCha20Rng;
 ///
-/// #[derive(Clone, Copy)]
+/// #[derive(Debug, Clone, Copy)]
 /// struct TicTacToeState {
 ///     board: [u8; 9],
 ///     current_player: u8,
 /// }
 ///
-/// #[derive(Clone, Copy)]
+/// #[derive(Debug, Clone, Copy)]
 /// enum TicTacToeAction {
 ///     Place(u8),
 /// }
 ///
-/// #[derive(Clone)]
+/// #[derive(Debug, Clone)]
 /// struct TicTacToeObs {
 ///     board_view: [f32; 18],
 ///     legal_moves: [f32; 9],
 /// }
 ///
+/// #[derive(Debug)]
 /// struct TicTacToe;
 ///
 /// impl Game for TicTacToe {
@@ -205,6 +206,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq)]
     struct TestObs(Vec<f32>);
 
+    #[derive(Debug)]
     struct TestGame;
 
     impl Game for TestGame {

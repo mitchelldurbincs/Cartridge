@@ -39,16 +39,23 @@ pub enum ErasedGameError {
 /// fn simulate_game(game: &mut dyn ErasedGame) -> Result<(), ErasedGameError> {
 ///     let caps = game.capabilities();
 ///     println!("Simulating {}", caps.id.env_id);
-///     
+///
 ///     let mut state_buf = Vec::new();
 ///     let mut obs_buf = Vec::new();
-///     
+///
 ///     // Reset the game
 ///     game.reset(42, &[], &mut state_buf, &mut obs_buf)?;
-///     
+///
 ///     // Take a step (would need valid action bytes)
 ///     let action_bytes = vec![0]; // Placeholder
-///     let (reward, done, info) = game.step(&state_buf, &action_bytes, &mut state_buf, &mut obs_buf)?;
+///     let mut next_state_buf = Vec::new();
+///     let mut next_obs_buf = Vec::new();
+///     let (reward, done, info) = game.step(
+///         &state_buf,
+///         &action_bytes,
+///         &mut next_state_buf,
+///         &mut next_obs_buf,
+///     )?;
 ///
 ///     println!("Reward: {}, Done: {}, Info: {}", reward, done, info);
 ///     Ok(())
@@ -115,6 +122,7 @@ mod tests {
     use crate::typed::{ActionSpace, Encoding};
 
     // Mock implementation for testing
+    #[derive(Debug)]
     struct MockErasedGame {
         step_count: u32,
     }
