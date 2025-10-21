@@ -2,8 +2,10 @@ package http
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 )
@@ -43,6 +45,7 @@ func recovererMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				log.Printf("panic recovered: service=web-go request_id=%s panic=%v stacktrace=%s", getRequestID(r.Context()), rec, debug.Stack())
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()
