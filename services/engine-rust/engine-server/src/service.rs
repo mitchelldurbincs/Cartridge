@@ -374,7 +374,7 @@ mod tests {
         });
     }
 
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct RngStepGame {
         step_calls: u32,
     }
