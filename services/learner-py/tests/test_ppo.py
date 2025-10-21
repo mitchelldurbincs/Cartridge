@@ -78,3 +78,30 @@ def test_ppo_reuses_provided_advantages_and_returns() -> None:
 
     assert torch.equal(resolved_advantages, advantages)
     assert torch.equal(resolved_returns, returns)
+
+
+def test_ppo_ensure_advantages_treats_1d_batch_independently() -> None:
+    algo = PPOLearner(AlgorithmConfig(), _make_training_config())
+    rewards = torch.tensor([1.0, 0.5, 0.25])
+    dones = torch.tensor([False, True, False])
+    values = torch.tensor([0.3, 0.7, 0.1])
+
+    batch = TransitionBatch(
+        observations=torch.zeros(3, 2),
+        actions=torch.zeros(3, dtype=torch.long),
+        log_probs=torch.zeros(3),
+        rewards=rewards,
+        dones=dones,
+        values=values,
+    )
+
+    advantages, returns = algo._ensure_advantages(batch)
+
+    mask = (~dones).float()
+    expected_advantages = rewards + algo._config.gamma * values * mask - values
+    expected_returns = expected_advantages + values
+
+    assert advantages.shape == rewards.shape
+    assert returns.shape == rewards.shape
+    assert torch.allclose(advantages, expected_advantages)
+    assert torch.allclose(returns, expected_returns)

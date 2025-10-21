@@ -155,11 +155,11 @@ class PPOLearner(AlgorithmProtocol):
         values_was_1d = values.ndim == 1
 
         if rewards_was_1d:
-            rewards = rewards.unsqueeze(-1)
+            rewards = rewards.unsqueeze(0)
         if dones_was_1d:
-            dones = dones.unsqueeze(-1)
+            dones = dones.unsqueeze(0)
         if values_was_1d:
-            values = values.unsqueeze(-1)
+            values = values.unsqueeze(0)
 
         advantages, returns = compute_gae(
             rewards=rewards,
@@ -170,8 +170,8 @@ class PPOLearner(AlgorithmProtocol):
         )
 
         if rewards_was_1d:
-            advantages = advantages.squeeze(-1)
-            returns = returns.squeeze(-1)
+            advantages = advantages.squeeze(0)
+            returns = returns.squeeze(0)
 
         batch.advantages = advantages
         batch.returns = returns
