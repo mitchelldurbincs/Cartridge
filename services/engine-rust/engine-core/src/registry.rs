@@ -206,7 +206,9 @@ macro_rules! register_game {
 mod tests {
     use super::*;
     use crate::adapter::GameAdapter;
-    use crate::typed::{ActionSpace, Capabilities, Encoding, EngineId, Game};
+    use crate::typed::{
+        ActionSpace, Capabilities, DecodeError, EncodeError, Encoding, EngineId, Game,
+    };
     use rand_chacha::ChaCha20Rng;
 
     // Test game implementation
@@ -306,6 +308,94 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct OverrideTestGame {
+        env_id: &'static str,
+        build_id: &'static str,
+    }
+
+    impl OverrideTestGame {
+        const fn new(env_id: &'static str, build_id: &'static str) -> Self {
+            Self { env_id, build_id }
+        }
+    }
+
+    impl Game for OverrideTestGame {
+        type State = u8;
+        type Action = u8;
+        type Obs = ();
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: self.env_id.to_string(),
+                build_id: self.build_id.to_string(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "u8:v1".into(),
+                    action: "u8:v1".into(),
+                    obs: "unit".into(),
+                    schema_version: 1,
+                },
+                max_horizon: 1,
+                action_space: ActionSpace::Discrete(2),
+                preferred_batch: 1,
+            }
+        }
+
+        fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            (0, ())
+        }
+
+        fn step(
+            &mut self,
+            state: &mut Self::State,
+            action: Self::Action,
+            _rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            *state = state.wrapping_add(action);
+            ((), 0.0, true, *state as u64)
+        }
+
+        fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.push(*state);
+            Ok(())
+        }
+
+        fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+            if buf.len() != 1 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 1,
+                    actual: buf.len(),
+                });
+            }
+            Ok(buf[0])
+        }
+
+        fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.push(*action);
+            Ok(())
+        }
+
+        fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            if buf.len() != 1 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 1,
+                    actual: buf.len(),
+                });
+            }
+            Ok(buf[0])
+        }
+
+        fn encode_obs(_obs: &Self::Obs, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_register_and_create_game() {
         // Clear registry for clean test
@@ -383,5 +473,41 @@ mod tests {
         clear_registry();
         assert!(!is_registered("temp_game"));
         assert!(list_registered_games().is_empty());
+    }
+
+    #[test]
+    fn test_register_game_overrides_existing_factory() {
+        clear_registry();
+
+        fn factory_old() -> Box<dyn ErasedGame> {
+            Box::new(GameAdapter::new(OverrideTestGame::new(
+                "override_env",
+                "build_old",
+            )))
+        }
+
+        fn factory_new() -> Box<dyn ErasedGame> {
+            Box::new(GameAdapter::new(OverrideTestGame::new(
+                "override_env",
+                "build_new",
+            )))
+        }
+
+        register_game("override_env".to_string(), factory_old);
+        let initial_build = create_game("override_env")
+            .expect("initial factory should produce a game")
+            .engine_id()
+            .build_id;
+        assert_eq!(initial_build, "build_old");
+
+        register_game("override_env".to_string(), factory_new);
+        let updated_build = create_game("override_env")
+            .expect("overridden factory should still produce a game")
+            .engine_id()
+            .build_id;
+        assert_eq!(updated_build, "build_new");
+
+        let registered = list_registered_games();
+        assert_eq!(registered, vec!["override_env".to_string()]);
     }
 }
