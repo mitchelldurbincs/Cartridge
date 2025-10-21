@@ -50,6 +50,13 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
     _seed_everything(config.training.seed)
     _LOGGER.info("Random seeds initialized", seed=config.training.seed)
 
+    metrics: MetricsRegistry | None = None
+    weights: WeightPublisher | None = None
+    checkpoints: CheckpointManager | None = None
+    control: ControlClient | None = None
+    replay: ReplayClient | None = None
+    learner: LearnerCore | None = None
+
     try:
         # Initialize components
         _LOGGER.info("Initializing service components")
@@ -109,8 +116,15 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
     finally:
         _LOGGER.info("Shutting down learner service")
         try:
-            await learner.stop()
-            await control.close()
+            if learner is not None:
+                await learner.stop()
+            else:
+                if replay is not None:
+                    await replay.stop()
+                if weights is not None:
+                    await weights.close()
+            if control is not None:
+                await control.close()
             _LOGGER.info("Learner service shutdown completed successfully")
         except Exception as exc:
             _LOGGER.error(
