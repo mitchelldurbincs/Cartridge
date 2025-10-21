@@ -146,26 +146,32 @@ class PPOLearner(AlgorithmProtocol):
         if batch.advantages is not None and batch.returns is not None:
             return batch.advantages, batch.returns
 
-        # Reshape 1D tensors to 2D for GAE computation: [batch] -> [batch, 1] -> [1, batch]
-        # GAE expects [time, batch] format, but we have individual transitions, so time=1
-        rewards_2d = batch.rewards.unsqueeze(0)  # [batch] -> [1, batch]
-        dones_2d = batch.dones.unsqueeze(0)      # [batch] -> [1, batch]
+        rewards = batch.rewards
+        dones = batch.dones
+        values = batch.values
 
-        # Values need to be [time+1, batch] for bootstrapping, so we duplicate the last value
-        values_2d = batch.values.unsqueeze(0)    # [batch] -> [1, batch]
-        values_bootstrap = torch.cat([values_2d, values_2d], dim=0)  # [2, batch] for bootstrap
+        rewards_was_1d = rewards.ndim == 1
+        dones_was_1d = dones.ndim == 1
+        values_was_1d = values.ndim == 1
+
+        if rewards_was_1d:
+            rewards = rewards.unsqueeze(-1)
+        if dones_was_1d:
+            dones = dones.unsqueeze(-1)
+        if values_was_1d:
+            values = values.unsqueeze(-1)
 
         advantages, returns = compute_gae(
-            rewards=rewards_2d,
-            values=values_bootstrap,
-            dones=dones_2d,
+            rewards=rewards,
+            values=values,
+            dones=dones,
             gamma=self._config.gamma,
             gae_lambda=self._config.gae_lambda,
         )
 
-        # Flatten back to match expected shapes: [1, batch] -> [batch]
-        advantages = advantages.squeeze(0)
-        returns = returns.squeeze(0)
+        if rewards_was_1d:
+            advantages = advantages.squeeze(-1)
+            returns = returns.squeeze(-1)
 
         batch.advantages = advantages
         batch.returns = returns
