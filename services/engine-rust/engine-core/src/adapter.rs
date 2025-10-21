@@ -205,6 +205,7 @@ impl<T: Game> ErasedGame for GameAdapter<T> {
 mod tests {
     use super::*;
     use crate::typed::{ActionSpace, DecodeError, EncodeError, Encoding};
+    use rand::RngCore;
 
     // Test game implementation
     #[derive(Debug, PartialEq)]
@@ -520,6 +521,334 @@ mod tests {
                 // Test passes - we got the expected error type
             }
             _ => panic!("Expected Decoding error"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct CounterGame;
+
+    impl Game for CounterGame {
+        type State = u64;
+        type Action = u8;
+        type Obs = [u8; 8];
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: "counter".into(),
+                build_id: "test".into(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "u64:v1".into(),
+                    action: "u8:v1".into(),
+                    obs: "bytes:v1".into(),
+                    schema_version: 1,
+                },
+                max_horizon: 10,
+                action_space: ActionSpace::Discrete(8),
+                preferred_batch: 1,
+            }
+        }
+
+        fn reset(&mut self, rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            let value = rng.next_u64();
+            (value, value.to_le_bytes())
+        }
+
+        fn step(
+            &mut self,
+            state: &mut Self::State,
+            action: Self::Action,
+            rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            *state = state.wrapping_add(action as u64);
+            let _ = rng.next_u64();
+            ((*state).to_le_bytes(), *state as f32, false, *state)
+        }
+
+        fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.extend_from_slice(&state.to_le_bytes());
+            Ok(())
+        }
+
+        fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+            if buf.len() != 8 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 8,
+                    actual: buf.len(),
+                });
+            }
+            let mut bytes = [0_u8; 8];
+            bytes.copy_from_slice(buf);
+            Ok(u64::from_le_bytes(bytes))
+        }
+
+        fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.push(*action);
+            Ok(())
+        }
+
+        fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            if buf.len() != 1 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 1,
+                    actual: buf.len(),
+                });
+            }
+            Ok(buf[0])
+        }
+
+        fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.extend_from_slice(obs);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_adapter_reset_reseeds_rng_after_step() {
+        let mut adapter = GameAdapter::new(CounterGame);
+
+        let mut initial_state = Vec::new();
+        let mut initial_obs = Vec::new();
+        adapter
+            .reset(9, &[], &mut initial_state, &mut initial_obs)
+            .unwrap();
+
+        // Advance the RNG state through a step
+        let mut action_bytes = Vec::new();
+        CounterGame::encode_action(&3, &mut action_bytes).unwrap();
+        let mut stepped_state = Vec::new();
+        let mut stepped_obs = Vec::new();
+        adapter
+            .step(
+                &initial_state,
+                &action_bytes,
+                &mut stepped_state,
+                &mut stepped_obs,
+            )
+            .unwrap();
+
+        // Reset with the same seed should reproduce the original bytes
+        let mut second_state = Vec::new();
+        let mut second_obs = Vec::new();
+        adapter
+            .reset(9, &[], &mut second_state, &mut second_obs)
+            .unwrap();
+
+        assert_eq!(initial_state, second_state);
+        assert_eq!(initial_obs, second_obs);
+    }
+
+    #[test]
+    fn test_step_clears_prepopulated_output_buffers() {
+        let mut adapter = GameAdapter::new(CounterGame);
+
+        let mut state_buf = Vec::new();
+        let mut obs_buf = Vec::new();
+        adapter
+            .reset(123, &[], &mut state_buf, &mut obs_buf)
+            .unwrap();
+
+        let mut action_bytes = Vec::new();
+        CounterGame::encode_action(&1, &mut action_bytes).unwrap();
+
+        let mut new_state_buf = vec![0xFF; 32];
+        let mut new_obs_buf = vec![0xAA; 32];
+        adapter
+            .step(
+                &state_buf,
+                &action_bytes,
+                &mut new_state_buf,
+                &mut new_obs_buf,
+            )
+            .unwrap();
+
+        assert_eq!(new_state_buf.len(), 8);
+        assert_eq!(new_obs_buf.len(), 8);
+    }
+
+    #[derive(Debug)]
+    struct ResetEncodingFailsGame;
+
+    impl Game for ResetEncodingFailsGame {
+        type State = ();
+        type Action = ();
+        type Obs = ();
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: "reset_fail".into(),
+                build_id: "test".into(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "void".into(),
+                    action: "void".into(),
+                    obs: "void".into(),
+                    schema_version: 1,
+                },
+                max_horizon: 1,
+                action_space: ActionSpace::Discrete(1),
+                preferred_batch: 1,
+            }
+        }
+
+        fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            ((), ())
+        }
+
+        fn step(
+            &mut self,
+            _state: &mut Self::State,
+            _action: Self::Action,
+            _rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            ((), 0.0, false, 0)
+        }
+
+        fn encode_state(_state: &Self::State, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            Err(EncodeError::InvalidData("state fail".into()))
+        }
+
+        fn decode_state(_buf: &[u8]) -> Result<Self::State, DecodeError> {
+            Ok(())
+        }
+
+        fn encode_action(_action: &Self::Action, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            Ok(())
+        }
+
+        fn decode_action(_buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            Ok(())
+        }
+
+        fn encode_obs(_obs: &Self::Obs, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_reset_propagates_encoding_errors() {
+        let mut adapter = GameAdapter::new(ResetEncodingFailsGame);
+        let mut state_buf = Vec::new();
+        let mut obs_buf = Vec::new();
+
+        let err = adapter
+            .reset(0, &[], &mut state_buf, &mut obs_buf)
+            .unwrap_err();
+        match err {
+            ErasedGameError::Encoding(msg) => assert!(msg.contains("state fail")),
+            other => panic!("expected encoding error, got {other:?}"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct StepEncodingFailsGame;
+
+    impl Game for StepEncodingFailsGame {
+        type State = u8;
+        type Action = ();
+        type Obs = bool;
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: "step_fail".into(),
+                build_id: "test".into(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "u8:v1".into(),
+                    action: "unit".into(),
+                    obs: "bool".into(),
+                    schema_version: 1,
+                },
+                max_horizon: 1,
+                action_space: ActionSpace::Discrete(1),
+                preferred_batch: 1,
+            }
+        }
+
+        fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            (0, false)
+        }
+
+        fn step(
+            &mut self,
+            state: &mut Self::State,
+            _action: Self::Action,
+            _rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            *state = state.wrapping_add(1);
+            (true, 0.0, false, 0)
+        }
+
+        fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.push(*state);
+            Ok(())
+        }
+
+        fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+            if buf.len() != 1 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 1,
+                    actual: buf.len(),
+                });
+            }
+            Ok(buf[0])
+        }
+
+        fn encode_action(_action: &Self::Action, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            Ok(())
+        }
+
+        fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            if !buf.is_empty() {
+                return Err(DecodeError::InvalidLength {
+                    expected: 0,
+                    actual: buf.len(),
+                });
+            }
+            Ok(())
+        }
+
+        fn encode_obs(obs: &Self::Obs, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            if *obs {
+                Err(EncodeError::InvalidData("obs fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn test_step_propagates_encoding_errors() {
+        let mut adapter = GameAdapter::new(StepEncodingFailsGame);
+
+        let mut state_buf = Vec::new();
+        let mut obs_buf = Vec::new();
+        adapter.reset(0, &[], &mut state_buf, &mut obs_buf).unwrap();
+
+        let mut new_state_buf = Vec::new();
+        let mut new_obs_buf = Vec::new();
+        let err = adapter
+            .step(&state_buf, &[], &mut new_state_buf, &mut new_obs_buf)
+            .unwrap_err();
+
+        match err {
+            ErasedGameError::Encoding(msg) => assert!(msg.contains("obs fail")),
+            other => panic!("expected encoding error, got {other:?}"),
         }
     }
 }
