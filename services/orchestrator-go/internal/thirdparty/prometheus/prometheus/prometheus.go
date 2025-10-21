@@ -263,6 +263,11 @@ type counterMetric struct {
 	opts   CounterOpts
 }
 
+// NewCounter constructs a counter collector.
+func NewCounter(opts CounterOpts) *counterMetric {
+	return newCounter(opts, nil)
+}
+
 func newCounter(opts CounterOpts, labels map[string]string) *counterMetric {
 	copied := make(map[string]string, len(labels))
 	for k, v := range labels {

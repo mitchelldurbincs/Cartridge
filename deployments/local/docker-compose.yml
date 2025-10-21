@@ -11,7 +11,8 @@ services:
 
   replay:
     build:
-      context: ../../services/replay-go
+      context: ../..
+      dockerfile: services/replay-go/Dockerfile
     image: cartridge/replay-go:local
     command: ["replay-server", "-port", "8080", "-max-size", "200000"]
     environment:
