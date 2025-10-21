@@ -23,31 +23,77 @@ use crate::typed::{Capabilities, EngineId, Game};
 /// # Example
 ///
 /// ```rust
-/// # use engine_core::typed::*;
 /// # use engine_core::adapter::GameAdapter;
 /// # use engine_core::erased::ErasedGame;
+/// # use engine_core::typed::{ActionSpace, Capabilities, DecodeError, EncodeError, EngineId, Game};
 /// # use rand_chacha::ChaCha20Rng;
-///
-/// # #[derive(Default)]
+/// #
+/// # #[derive(Debug, Default)]
 /// # struct MyGame;
 /// # impl Game for MyGame {
 /// #     type State = u32;
 /// #     type Action = u8;
 /// #     type Obs = Vec<f32>;
-/// #     fn engine_id(&self) -> EngineId { todo!() }
-/// #     fn capabilities(&self) -> Capabilities { todo!() }
-/// #     fn reset(&mut self, rng: &mut ChaCha20Rng, hint: &[u8]) -> (Self::State, Self::Obs) { todo!() }
+/// #
+/// #     fn engine_id(&self) -> EngineId {
+/// #         EngineId {
+/// #             env_id: "example".into(),
+/// #             build_id: "test".into(),
+/// #         }
+/// #     }
+/// #
+/// #     fn capabilities(&self) -> Capabilities {
+/// #         Capabilities {
+/// #             id: self.engine_id(),
+/// #             encoding: engine_core::typed::Encoding {
+/// #                 state: "state".into(),
+/// #                 action: "action".into(),
+/// #                 obs: "obs".into(),
+/// #                 schema_version: 1,
+/// #             },
+/// #             max_horizon: 1,
+/// #             action_space: ActionSpace::Discrete(1),
+/// #             preferred_batch: 1,
+/// #         }
+/// #     }
+/// #
+/// #     fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+/// #         (0, vec![])
+/// #     }
+/// #
 /// #     fn step(
 /// #         &mut self,
 /// #         state: &mut Self::State,
-/// #         action: Self::Action,
-/// #         rng: &mut ChaCha20Rng,
-/// #     ) -> (Self::Obs, f32, bool, u64) { todo!() }
-/// #     fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> { todo!() }
-/// #     fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> { todo!() }
-/// #     fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> { todo!() }
-/// #     fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> { todo!() }
-/// #     fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> { todo!() }
+/// #         _action: Self::Action,
+/// #         _rng: &mut ChaCha20Rng,
+/// #     ) -> (Self::Obs, f32, bool, u64) {
+/// #         *state += 1;
+/// #         (vec![], 0.0, true, *state as u64)
+/// #     }
+/// #
+/// #     fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+/// #         out.extend_from_slice(&state.to_le_bytes());
+/// #         Ok(())
+/// #     }
+/// #
+/// #     fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+/// #         let mut arr = [0_u8; 4];
+/// #         arr.copy_from_slice(&buf[..4]);
+/// #         Ok(u32::from_le_bytes(arr))
+/// #     }
+/// #
+/// #     fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+/// #         out.push(*action);
+/// #         Ok(())
+/// #     }
+/// #
+/// #     fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+/// #         Ok(buf[0])
+/// #     }
+/// #
+/// #     fn encode_obs(_obs: &Self::Obs, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+/// #         Ok(())
+/// #     }
 /// # }
 ///
 /// let typed_game = MyGame::default();
