@@ -29,9 +29,8 @@ checkpoints:
   keep_last: 3
 
 weights:
-  backend: redis
-  endpoint: redis://redis:6379/0
-  channel: weights:updates
+  backend: grpc
+  endpoint: weights:8081
 
 control:
   orchestrator_endpoint: http://orchestrator:8080/api/v1

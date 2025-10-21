@@ -181,7 +181,13 @@ class LearnerCore:
             )
 
             await self._weights.publish(
-                WeightPayload(step=update.step, checksum=manifest.checksum, uri=str(manifest.path))
+                WeightPayload(
+                    run_id=self._config.control.run_id,
+                    step=update.step,
+                    checksum=manifest.checksum,
+                    uri=str(manifest.path),
+                    metadata=manifest.metadata,
+                )
             )
             self._metrics.weights_published_total.inc()
 

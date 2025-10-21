@@ -5,8 +5,8 @@ services on a developer workstation. They are consumed by the Docker Compose set
 `deployments/local/` and can also be referenced when exporting environment variables manually.
 
 - `learner.yaml` — baseline PPO learner configuration used by `services/learner-py`. The
-  Redis channel under `weights.channel` should match `WEIGHTS_REDIS_CHANNEL` in
-  `weights.env` so that weight notifications fan out consistently.
+  weights block now targets the gRPC service so learner publishes checkpoints through the
+  `PublishWeights` API exposed by `services/weights-go`.
 - `*.env` files — shell-friendly environment variables for services that read from the process
 environment. Source these files (e.g. `source orchestrator.env`) before starting the service
 binary to replicate the Compose defaults.
