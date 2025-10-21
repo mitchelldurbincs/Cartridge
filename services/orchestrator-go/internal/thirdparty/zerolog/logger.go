@@ -11,10 +11,12 @@ import (
 type Logger struct {
 	writer     io.Writer
 	baseFields map[string]string
+	level      Level
 }
 
 type Context struct {
 	logger *Logger
+	fields map[string]interface{}
 }
 
 type Event struct {
@@ -28,22 +30,67 @@ func New(w io.Writer) *Logger {
 	if w == nil {
 		w = io.Discard
 	}
-	return &Logger{writer: w, baseFields: map[string]string{}}
+	return &Logger{writer: w, baseFields: map[string]string{}, level: InfoLevel}
+}
+
+func (l *Logger) Level(level Level) *Logger {
+	l.level = level
+	return l
 }
 
 func (l *Logger) With() Context {
-	return Context{logger: l}
+	return Context{logger: l, fields: make(map[string]interface{})}
 }
 
 func (c Context) Timestamp() Context { return c }
 
-func (c Context) Logger() *Logger { return c.logger }
+func (c Context) Str(key, value string) Context {
+	c.fields[key] = value
+	return c
+}
+
+func (c Context) Logger() *Logger {
+	// Create a new logger with the accumulated fields
+	newLogger := &Logger{
+		writer:     c.logger.writer,
+		baseFields: make(map[string]string),
+		level:      c.logger.level,
+	}
+	// Copy existing base fields
+	for k, v := range c.logger.baseFields {
+		newLogger.baseFields[k] = v
+	}
+	// Add context fields as base fields
+	for k, v := range c.fields {
+		if s, ok := v.(string); ok {
+			newLogger.baseFields[k] = s
+		}
+	}
+	return newLogger
+}
 
 func (l *Logger) log(level string) *Event {
 	return &Event{
 		logger: l,
 		level:  level,
 		fields: map[string]interface{}{},
+	}
+}
+
+func getLevelInt(level string) Level {
+	switch level {
+	case "debug":
+		return DebugLevel
+	case "info":
+		return InfoLevel
+	case "warn":
+		return WarnLevel
+	case "error":
+		return ErrorLevel
+	case "fatal":
+		return FatalLevel
+	default:
+		return InfoLevel
 	}
 }
 
@@ -55,8 +102,10 @@ const (
 	WarnLevel
 	ErrorLevel
 	FatalLevel
+	Disabled = 999
 )
 
+func (l *Logger) Debug() *Event { return l.log("debug") }
 func (l *Logger) Info() *Event  { return l.log("info") }
 func (l *Logger) Warn() *Event  { return l.log("warn") }
 func (l *Logger) Error() *Event { return l.log("error") }
@@ -92,6 +141,11 @@ func (e *Event) Int64(key string, value int64) *Event {
 	return e
 }
 
+func (e *Event) Float64(key string, value float64) *Event {
+	e.fields[key] = value
+	return e
+}
+
 func (e *Event) Dur(key string, value time.Duration) *Event {
 	e.fields[key] = value.String()
 	return e
@@ -107,12 +161,22 @@ func (e *Event) Bytes(key string, value []byte) *Event {
 	return e
 }
 
+func (e *Event) Time(key string, value time.Time) *Event {
+	e.fields[key] = value.Format(time.RFC3339)
+	return e
+}
+
 func (e *Event) Err(err error) *Event {
 	e.err = err
 	return e
 }
 
 func (e *Event) Msg(msg string) {
+	// Check if this log level should be output
+	if getLevelInt(e.level) < e.logger.level {
+		return
+	}
+
 	e.fields["msg"] = msg
 	if e.err != nil {
 		e.fields["error"] = e.err.Error()

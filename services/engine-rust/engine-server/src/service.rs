@@ -428,13 +428,14 @@ mod tests {
             state: &mut Self::State,
             _action: Self::Action,
             rng: &mut rand_chacha::ChaCha20Rng,
-        ) -> (Self::Obs, f32, bool) {
+        ) -> (Self::Obs, f32, bool, u64) {
             self.step_calls += 1;
             let random = rng.next_u32();
             state.0 = random as u64;
             let obs = RngObs(random as f32);
             let reward = random as f32 + self.step_calls as f32;
-            (obs, reward, false)
+            let info = (state.0 << 32) | u64::from(self.step_calls);
+            (obs, reward, false, info)
         }
 
         fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {

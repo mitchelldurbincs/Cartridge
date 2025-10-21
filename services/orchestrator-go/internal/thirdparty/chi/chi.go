@@ -8,6 +8,9 @@ import (
 
 type contextKey struct{}
 
+// RouteCtxKey is the context key for the route context
+var RouteCtxKey = contextKey{}
+
 // Router is the interface exposed by chi for registering routes.
 type Router interface {
 	Method(method, pattern string, handler http.Handler)
@@ -186,7 +189,30 @@ type requestContext struct {
 
 // Context stores routing metadata.
 type Context struct {
-	pattern string
+	pattern   string
+	URLParams URLParams
+}
+
+// URLParams stores URL parameters
+type URLParams struct {
+	Keys   []string
+	Values []string
+}
+
+// Add adds a URL parameter
+func (p *URLParams) Add(key, value string) {
+	p.Keys = append(p.Keys, key)
+	p.Values = append(p.Values, value)
+}
+
+// NewRouteContext creates a new route context for testing
+func NewRouteContext() *Context {
+	return &Context{
+		URLParams: URLParams{
+			Keys:   make([]string, 0),
+			Values: make([]string, 0),
+		},
+	}
 }
 
 // RoutePattern returns the matched route pattern.
@@ -208,9 +234,20 @@ func RouteContext(ctx context.Context) *Context {
 
 // URLParam retrieves a path parameter set by the router.
 func URLParam(r *http.Request, key string) string {
+	// First try to get from the regular request context
 	info, _ := r.Context().Value(contextKey{}).(*requestContext)
-	if info == nil {
-		return ""
+	if info != nil {
+		return info.params[key]
 	}
-	return info.params[key]
+
+	// For testing, try to get from the route context directly
+	if ctx, ok := r.Context().Value(RouteCtxKey).(*Context); ok && ctx != nil {
+		for i, k := range ctx.URLParams.Keys {
+			if k == key && i < len(ctx.URLParams.Values) {
+				return ctx.URLParams.Values[i]
+			}
+		}
+	}
+
+	return ""
 }
