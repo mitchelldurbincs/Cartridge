@@ -24,7 +24,7 @@ func main() {
 
 	baseLogger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
-	cfg, err := webconfig.Load("configs/web-go", "./configs/web-go", "./")
+	cfg, err := webconfig.Load("configs/web-go", "./configs/web-go", "../configs/web-go", "./")
 	if err != nil {
 		baseLogger.Fatal().Err(err).Msg("failed to load config")
 	}
