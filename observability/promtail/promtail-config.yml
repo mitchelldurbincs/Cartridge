@@ -1,0 +1,65 @@
+# Promtail configuration for Docker container log collection
+# Collects logs from all Docker containers and ships to Loki
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Scrape logs from Docker containers
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=deployments_local"]
+
+    relabel_configs:
+      # Add container name as a label
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+
+      # Add service name from docker-compose
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+
+      # Add project name from docker-compose
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+
+      # Add container ID
+      - source_labels: ['__meta_docker_container_id']
+        target_label: 'container_id'
+        regex: '(.{12})'
+        replacement: '$1'
+
+      # Add image name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_image']
+        target_label: 'image'
+
+    pipeline_stages:
+      # Parse log level from common log formats
+      - regex:
+          expression: '.*(?i)(?P<level>(debug|info|warn|warning|error|fatal|panic)).*'
+      - labels:
+          level:
+
+      # Extract timestamp if present
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - "2006-01-02T15:04:05.000Z"
+            - "2006-01-02 15:04:05"
+
+      # Output stage
+      - output:
+          source: output
