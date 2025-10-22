@@ -6,8 +6,10 @@ services:
     image: cartridge/engine-rust:local
     environment:
       ENGINE_SERVER_ADDR: 0.0.0.0:50051
+      ENGINE_METRICS_ADDR: 0.0.0.0:9000
     ports:
       - "50051:50051"
+      - "9000:9000"
 
   replay:
     build:
@@ -18,8 +20,10 @@ services:
     environment:
       REPLAY_PORT: "8080"
       REPLAY_MAX_SIZE: "200000"
+      REPLAY_METRICS_PORT: "9090"
     ports:
       - "8081:8080"
+      - "9090:9090"
 
   orchestrator:
     build:
@@ -70,6 +74,8 @@ services:
       context: ../../services/learner-py
     image: cartridge/learner-py:local
     command: ["--config", "/config/learner.yaml"]
+    ports:
+      - "9001:9001"
     volumes:
       - learner-checkpoints:/checkpoints
       - ../../configs/runtime/local/learner.yaml:/config/learner.yaml:ro
@@ -91,6 +97,9 @@ services:
       ACTOR_BATCH_SIZE: "64"
       ACTOR_FLUSH_INTERVAL: "5"
       ACTOR_LOG_LEVEL: info
+      ACTOR_METRICS_ADDR: 0.0.0.0:9002
+    ports:
+      - "9002:9002"
     depends_on:
       - engine
       - replay
@@ -99,3 +108,8 @@ services:
 volumes:
   learner-checkpoints:
   redis-data:
+
+networks:
+  default:
+    name: cartridge_network
+    external: true
