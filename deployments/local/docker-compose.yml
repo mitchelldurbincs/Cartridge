@@ -10,6 +10,15 @@ services:
     ports:
       - "50051:50051"
       - "9000:9000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:9000/metrics || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - cartridge
 
   replay:
     build:
@@ -24,6 +33,15 @@ services:
     ports:
       - "8081:8080"
       - "9090:9090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/metrics > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cartridge
 
   orchestrator:
     build:
@@ -43,9 +61,20 @@ services:
       HEARTBEAT_UNRESPONSIVE: 135s
     ports:
       - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/busybox/busybox", "wget", "-q", "--spider", "http://localhost:8080/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - engine
-      - replay
+      engine:
+        condition: service_healthy
+      replay:
+        condition: service_healthy
+    networks:
+      - cartridge
 
   weights:
     build:
@@ -58,8 +87,18 @@ services:
     ports:
       - "8082:8081"
       - "9094:9094"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/busybox/busybox", "wget", "-q", "--spider", "http://localhost:9094/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    networks:
+      - cartridge
 
   redis:
     image: redis:7-alpine
@@ -68,6 +107,15 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - cartridge
 
   learner:
     build:
@@ -79,10 +127,22 @@ services:
     volumes:
       - learner-checkpoints:/checkpoints
       - ../../configs/runtime/local/learner.yaml:/config/learner.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:9001/metrics || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
-      - replay
-      - orchestrator
-      - redis
+      replay:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cartridge
 
   actor:
     build:
@@ -100,16 +160,27 @@ services:
       ACTOR_METRICS_ADDR: 0.0.0.0:9002
     ports:
       - "9002:9002"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:9002/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
     depends_on:
-      - engine
-      - replay
-      - learner
+      engine:
+        condition: service_healthy
+      replay:
+        condition: service_healthy
+      learner:
+        condition: service_healthy
+    networks:
+      - cartridge
 
 volumes:
   learner-checkpoints:
   redis-data:
 
 networks:
-  default:
-    name: cartridge_network
-    external: true
+  cartridge:
+    name: cartridge_local
