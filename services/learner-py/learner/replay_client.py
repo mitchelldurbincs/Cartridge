@@ -33,6 +33,13 @@ SamplerResult = TransitionBatch | SampleResponseLike
 SamplerFn = Callable[[], Awaitable[SamplerResult]] | Callable[[], SamplerResult]
 
 
+class NoTransitionsAvailableError(RuntimeError):
+    """Raised when the replay service has no transitions to return yet."""
+
+
+_EMPTY_REPLAY_MESSAGE = "no transitions available for sampling"
+
+
 class ReplayClient:
     """Client responsible for streaming batches from the replay buffer."""
 
@@ -153,6 +160,17 @@ class ReplayClient:
 
                         break  # Break out of retry loop on success
 
+            except NoTransitionsAvailableError:
+                consecutive_failures = 0
+                if self._metrics is not None:
+                    self._metrics.sample_results_total.labels(result="empty").inc()
+                self._logger.debug(
+                    "Replay buffer empty, waiting for transitions",
+                    queue_size=self._queue.qsize(),
+                )
+                await asyncio.sleep(1.0)
+                continue
+
             except (RetryError, RuntimeError) as exc:
                 consecutive_failures += 1
                 self._logger.error(
@@ -266,6 +284,19 @@ class ReplayClient:
                     return response
 
                 except grpc.RpcError as e:
+                    details = (e.details() or "").lower()
+                    code = e.code()
+
+                    if (
+                        code == grpc.StatusCode.INTERNAL
+                        and _EMPTY_REPLAY_MESSAGE in details
+                    ):
+                        self._logger.debug(
+                            "Replay service returned no transitions",
+                            status_code=code.name if code is not None else None,
+                        )
+                        raise NoTransitionsAvailableError(_EMPTY_REPLAY_MESSAGE) from e
+
                     if self._metrics is not None:
                         self._metrics.sample_results_total.labels(result="error").inc()
 
@@ -273,22 +304,22 @@ class ReplayClient:
                     await self._close_channel()
 
                     # Log different error types
-                    if e.code() == grpc.StatusCode.UNAVAILABLE:
+                    if code == grpc.StatusCode.UNAVAILABLE:
                         self._logger.warning(
                             "Replay service unavailable, will retry",
-                            status_code=e.code().name,
+                            status_code=code.name,
                             details=e.details(),
                         )
-                    elif e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    elif code == grpc.StatusCode.DEADLINE_EXCEEDED:
                         self._logger.warning(
                             "Replay request timeout, will retry",
-                            status_code=e.code().name,
+                            status_code=code.name,
                             details=e.details(),
                         )
                     else:
                         self._logger.error(
                             "gRPC sampling failed",
-                            status_code=e.code().name if e.code() is not None else None,
+                            status_code=code.name if code is not None else None,
                             details=e.details(),
                         )
 
@@ -309,4 +340,4 @@ class ReplayClient:
         self._metrics.replay_queue_depth.set(depth)
 
 
-__all__ = ["ReplayClient", "SamplerFn"]
+__all__ = ["ReplayClient", "SamplerFn", "NoTransitionsAvailableError"]
