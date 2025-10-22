@@ -32,7 +32,7 @@ services:
       REPLAY_METRICS_PORT: "9090"
     ports:
       - "8081:8080"
-      - "9090:9090"
+      - "9100:9090"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:9090/metrics > /dev/null"]
