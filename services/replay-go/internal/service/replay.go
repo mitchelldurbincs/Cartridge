@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,7 @@ const (
 
 	resultSuccess         = "success"
 	resultError           = "error"
+	resultEmpty           = "empty"
 	resultInvalidArgument = "invalid_argument"
 )
 
@@ -137,6 +139,12 @@ func (s *ReplayService) Sample(ctx context.Context, req *replayv1.SampleRequest)
 	// Sample transitions
 	transitions, weights, err := s.backend.Sample(ctx, config)
 	if err != nil {
+		if errors.Is(err, storage.ErrEmptyReplay) {
+			if s.metrics != nil {
+				s.metrics.RecordSample(config.Prioritized, resultEmpty, time.Since(start), 0)
+			}
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		if s.metrics != nil {
 			s.metrics.RecordSample(config.Prioritized, resultError, time.Since(start), 0)
 		}

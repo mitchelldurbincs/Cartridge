@@ -1,5 +1,7 @@
 package storage
 
+import "errors"
+
 import (
 	"context"
 	"time"
@@ -33,14 +35,17 @@ type SampleConfig struct {
 	MaxTimestamp  *time.Time
 }
 
+// ErrEmptyReplay indicates that no transitions were available for sampling.
+var ErrEmptyReplay = errors.New("no transitions available for sampling")
+
 // Stats represents replay buffer statistics
 type Stats struct {
-	TotalTransitions   uint64
-	TotalEpisodes      uint64
-	TransitionsByEnv   map[string]uint64
-	OldestTimestamp    *time.Time
-	NewestTimestamp    *time.Time
-	StorageBytes       uint64
+	TotalTransitions uint64
+	TotalEpisodes    uint64
+	TransitionsByEnv map[string]uint64
+	OldestTimestamp  *time.Time
+	NewestTimestamp  *time.Time
+	StorageBytes     uint64
 }
 
 // Backend defines the interface for replay buffer storage implementations
