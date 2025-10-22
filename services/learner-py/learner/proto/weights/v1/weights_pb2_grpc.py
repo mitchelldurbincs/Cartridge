@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from proto.weights import weights_pb2 as proto_dot_weights_dot_weights__pb2
+from . import weights_pb2 as proto_dot_weights_dot_weights__pb2
 
 GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
