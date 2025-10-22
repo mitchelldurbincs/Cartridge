@@ -63,11 +63,7 @@ services:
       - "8080:8080"
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - /busybox/sh
-        - -c
-        - "/busybox/wget -qO- http://localhost:8080/metrics > /dev/null"
+      test: ["CMD", "/busybox/busybox", "wget", "-q", "--spider", "http://localhost:8080/metrics"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -93,11 +89,7 @@ services:
       - "9094:9094"
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - /busybox/sh
-        - -c
-        - "/busybox/wget -qO- http://localhost:9094/metrics > /dev/null"
+      test: ["CMD", "/busybox/busybox", "wget", "-q", "--spider", "http://localhost:9094/metrics"]
       interval: 15s
       timeout: 5s
       retries: 5

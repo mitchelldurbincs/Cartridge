@@ -10,7 +10,11 @@ WORKDIR /workspace/services/orchestrator-go
 # Build the orchestrator binary
 RUN CGO_ENABLED=0 go build -o /workspace/bin/orchestrator ./cmd/server
 
+FROM busybox:1.36 AS busybox
+
 FROM gcr.io/distroless/base-debian12:nonroot
+
+COPY --from=busybox /bin/busybox /busybox/busybox
 
 COPY --from=builder /workspace/bin/orchestrator /usr/local/bin/orchestrator
 
