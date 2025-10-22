@@ -287,9 +287,15 @@ class ReplayClient:
                     details = (e.details() or "").lower()
                     code = e.code()
 
+                    empty_statuses = {
+                        grpc.StatusCode.RESOURCE_EXHAUSTED,
+                        grpc.StatusCode.NOT_FOUND,
+                        grpc.StatusCode.FAILED_PRECONDITION,
+                    }
+
                     if (
-                        code == grpc.StatusCode.INTERNAL
-                        and _EMPTY_REPLAY_MESSAGE in details
+                        (code in empty_statuses)
+                        or (_EMPTY_REPLAY_MESSAGE in details)
                     ):
                         self._logger.debug(
                             "Replay service returned no transitions",

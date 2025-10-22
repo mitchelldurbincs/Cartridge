@@ -100,7 +100,7 @@ func (m *MemoryBackend) Sample(ctx context.Context, config *SampleConfig) ([]*Tr
 	candidates := m.getCandidates(config)
 
 	if len(candidates) == 0 {
-		return nil, nil, fmt.Errorf("no transitions available for sampling")
+		return nil, nil, ErrEmptyReplay
 	}
 
 	// Determine sample size
