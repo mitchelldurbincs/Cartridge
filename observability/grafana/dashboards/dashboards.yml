@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning configuration
+# This file tells Grafana to automatically load dashboards from the dashboards directory
+
+apiVersion: 1
+
+providers:
+  - name: 'Cartridge Dashboards'
+    orgId: 1
+    folder: 'Cartridge'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

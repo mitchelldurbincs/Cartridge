@@ -1,0 +1,132 @@
+# Prometheus configuration for Cartridge monitoring
+# This config scrapes metrics from all microservices in the platform
+
+global:
+  scrape_interval: 15s       # Scrape targets every 15 seconds
+  evaluation_interval: 15s   # Evaluate rules every 15 seconds
+  scrape_timeout: 10s        # Timeout after 10 seconds
+
+  external_labels:
+    cluster: 'local'
+    environment: 'development'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093  # Uncomment when alertmanager is deployed
+
+# Load alert rules
+rule_files:
+  - 'alerts.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Engine Service (Rust)
+  # Metrics: registry, RPC performance, game cache, buffer pools
+  - job_name: 'engine'
+    static_configs:
+      - targets: ['engine:9000']
+        labels:
+          service: 'engine'
+          language: 'rust'
+    metric_relabel_configs:
+      # Drop high-cardinality metrics if needed
+      - source_labels: [__name__]
+        regex: 'engine_.*'
+        action: keep
+
+  # Learner Service (Python)
+  # Metrics: training loop, replay sampling, checkpointing, heartbeats
+  - job_name: 'learner'
+    static_configs:
+      - targets: ['learner:9001']
+        labels:
+          service: 'learner'
+          language: 'python'
+    scrape_interval: 10s  # More frequent scraping for training metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'learner_.*'
+        action: keep
+
+  # Orchestrator Service (Go)
+  # Metrics: HTTP requests, run state transitions, health events
+  - job_name: 'orchestrator'
+    static_configs:
+      - targets: ['orchestrator:8080']
+        labels:
+          service: 'orchestrator'
+          language: 'go'
+    metrics_path: '/metrics'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'orchestrator_.*'
+        action: keep
+
+  # Replay Service (Go)
+  # Metrics: store/sample/clear operations, priority updates
+  - job_name: 'replay'
+    static_configs:
+      - targets: ['replay:9090']
+        labels:
+          service: 'replay'
+          language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'replay_.*'
+        action: keep
+
+  # Weights Service (Go)
+  # Metrics: model publication, streaming subscribers
+  - job_name: 'weights'
+    static_configs:
+      - targets: ['weights:9094']
+        labels:
+          service: 'weights'
+          language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'weights_.*'
+        action: keep
+
+  # Web Service (Go)
+  # Metrics: HTTP request handling
+  - job_name: 'web'
+    static_configs:
+      - targets: ['web:9107']
+        labels:
+          service: 'web'
+          language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'web_.*'
+        action: keep
+
+  # Actor Service (Rust)
+  # Metrics: episode results, transitions buffered/flushed
+  # Note: Only active if ACTOR_METRICS_ADDR is set
+  - job_name: 'actor'
+    static_configs:
+      - targets: ['actor:9002']
+        labels:
+          service: 'actor'
+          language: 'rust'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'actor_.*'
+        action: keep
+
+  # Grafana self-monitoring (optional)
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'
+    metrics_path: '/metrics'
