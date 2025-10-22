@@ -14,7 +14,7 @@ from learner.config import ReplayConfig
 from learner.datamodel import TransitionBatch
 from learner.metrics import MetricsRegistry
 from learner.replay import sample_response_to_batch
-from learner.replay_client import ReplayClient
+from learner.replay_client import ReplayClient, NoTransitionsAvailableError
 
 
 class MockTransition:
@@ -329,6 +329,34 @@ class TestReplayClientIntegration:
             assert isinstance(batch1, TransitionBatch)
             assert isinstance(batch2, TransitionBatch)
             assert call_count >= 2  # Should have called sampler at least twice
+
+    async def test_prefetch_loop_handles_empty_replay(
+        self, config: ReplayConfig, metrics: MetricsRegistry
+    ):
+        """Ensure the prefetch loop tolerates empty replay responses."""
+
+        attempt_counter = 0
+
+        async def sampler() -> TransitionBatch:
+            nonlocal attempt_counter
+            attempt_counter += 1
+            if attempt_counter < 3:
+                raise NoTransitionsAvailableError("no transitions available for sampling")
+            return TransitionBatch(
+                observations=torch.randn(1, 4),
+                actions=torch.randint(0, 2, (1,)),
+                log_probs=torch.randn(1),
+                rewards=torch.randn(1),
+                dones=torch.zeros(1, dtype=torch.bool),
+                values=torch.randn(1),
+            )
+
+        client = ReplayClient(config, sampler=sampler, metrics=metrics)
+
+        async with client:
+            batch = await client.sample()
+            assert isinstance(batch, TransitionBatch)
+            assert attempt_counter >= 3
 
     async def test_device_conversion(self, config: ReplayConfig):
         """Test that tensors are properly converted to specified device."""
