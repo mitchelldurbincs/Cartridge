@@ -172,8 +172,6 @@ services:
         condition: service_healthy
       replay:
         condition: service_healthy
-      learner:
-        condition: service_healthy
     networks:
       - cartridge
 
