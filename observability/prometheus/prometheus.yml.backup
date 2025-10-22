@@ -36,6 +36,11 @@ scrape_configs:
         labels:
           service: 'engine'
           language: 'rust'
+    metric_relabel_configs:
+      # Drop high-cardinality metrics if needed
+      - source_labels: [__name__]
+        regex: 'engine_.*'
+        action: keep
 
   # Learner Service (Python)
   # Metrics: training loop, replay sampling, checkpointing, heartbeats
@@ -46,6 +51,10 @@ scrape_configs:
           service: 'learner'
           language: 'python'
     scrape_interval: 10s  # More frequent scraping for training metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'learner_.*'
+        action: keep
 
   # Orchestrator Service (Go)
   # Metrics: HTTP requests, run state transitions, health events
@@ -56,6 +65,10 @@ scrape_configs:
           service: 'orchestrator'
           language: 'go'
     metrics_path: '/metrics'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'orchestrator_.*'
+        action: keep
 
   # Replay Service (Go)
   # Metrics: store/sample/clear operations, priority updates
@@ -65,6 +78,10 @@ scrape_configs:
         labels:
           service: 'replay'
           language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'replay_.*'
+        action: keep
 
   # Weights Service (Go)
   # Metrics: model publication, streaming subscribers
@@ -74,6 +91,10 @@ scrape_configs:
         labels:
           service: 'weights'
           language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'weights_.*'
+        action: keep
 
   # Web Service (Go)
   # Metrics: HTTP request handling
@@ -83,6 +104,10 @@ scrape_configs:
         labels:
           service: 'web'
           language: 'go'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'web_.*'
+        action: keep
 
   # Actor Service (Rust)
   # Metrics: episode results, transitions buffered/flushed
@@ -93,6 +118,10 @@ scrape_configs:
         labels:
           service: 'actor'
           language: 'rust'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'actor_.*'
+        action: keep
 
   # Grafana self-monitoring (optional)
   - job_name: 'grafana'
