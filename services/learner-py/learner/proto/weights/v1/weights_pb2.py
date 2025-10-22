@@ -4,19 +4,26 @@
 # source: proto/weights/weights.proto
 # Protobuf Python Version: 6.31.1
 """Generated protocol buffer code."""
+import importlib as _importlib
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
-from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-_runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    6,
-    31,
-    1,
-    '',
-    'proto/weights/weights.proto'
-)
+
+_runtime_version = None
+if _importlib.util.find_spec('google.protobuf.runtime_version') is not None:  # pragma: no branch
+    _runtime_version = _importlib.import_module('google.protobuf.runtime_version')
+
+if _runtime_version is not None and hasattr(_runtime_version, 'ValidateProtobufRuntimeVersion'):
+    _runtime_version.ValidateProtobufRuntimeVersion(
+        _runtime_version.Domain.PUBLIC,
+        6,
+        31,
+        1,
+        '',
+        'proto/weights/weights.proto'
+    )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
