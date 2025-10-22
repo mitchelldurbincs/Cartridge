@@ -3,6 +3,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
+use tracing::level_filters::LevelFilter;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[command(name = "actor")]
@@ -85,6 +86,13 @@ impl Config {
             return Err(anyhow!("flush_interval_secs must be greater than 0"));
         }
 
+        if self.log_level.parse::<LevelFilter>().is_err() {
+            return Err(anyhow!(
+                "invalid log level '{}', expected one of trace, debug, info, warn, error",
+                self.log_level
+            ));
+        }
+
         if let Some(addr) = &self.metrics_addr {
             addr.parse::<SocketAddr>()
                 .map_err(|e| anyhow!("invalid metrics bind address '{}': {}", addr, e))?;
@@ -148,8 +156,14 @@ mod tests {
         let mut cfg = base_config();
         cfg.metrics_addr = Some("not-an-addr".into());
         let err = cfg.validate().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("invalid metrics bind address"));
+        assert!(err.to_string().contains("invalid metrics bind address"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_log_level() {
+        let mut cfg = base_config();
+        cfg.log_level = "nope".into();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid log level"));
     }
 }

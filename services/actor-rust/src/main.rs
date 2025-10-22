@@ -1,9 +1,11 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::signal;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
 mod actor;
@@ -27,14 +29,16 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
-
     // Parse configuration
     let config = Config::parse();
 
     // Validate configuration
     config.validate()?;
+
+    // Initialize tracing with the configured level or RUST_LOG override
+    let selected_level = initialize_tracing(&config.log_level)?;
+    info!(log_level = %selected_level, "Tracing initialized");
+    debug!(config = ?config, "Actor configuration loaded");
 
     initialize_metrics(config.metrics_addr.as_deref())?;
 
@@ -75,6 +79,33 @@ async fn main() -> Result<()> {
             Err(e)
         }
     }
+}
+
+fn initialize_tracing(log_level: &str) -> Result<LevelFilter> {
+    let fallback_level = log_level
+        .parse::<LevelFilter>()
+        .map_err(|e| anyhow!("invalid ACTOR_LOG_LEVEL '{}': {}", log_level, e))?;
+
+    let selected_level = match env::var("RUST_LOG") {
+        Ok(value) => match value.parse::<LevelFilter>() {
+            Ok(level) => level,
+            Err(e) => {
+                eprintln!(
+                    "failed to parse RUST_LOG '{}': {}. Falling back to ACTOR_LOG_LEVEL.",
+                    value, e
+                );
+                fallback_level
+            }
+        },
+        Err(_) => fallback_level,
+    };
+
+    tracing_subscriber::fmt()
+        .with_max_level(selected_level)
+        .try_init()
+        .map_err(|e| anyhow!("failed to initialize tracing subscriber: {}", e))?;
+
+    Ok(selected_level)
 }
 
 fn initialize_metrics(addr: Option<&str>) -> Result<()> {
