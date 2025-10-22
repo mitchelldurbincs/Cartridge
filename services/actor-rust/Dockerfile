@@ -19,8 +19,10 @@ RUN cargo build --release
 # Runtime stage
 FROM debian:bookworm-slim
 
-# Install ca-certificates for HTTPS connections
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install ca-certificates and curl for runtime diagnostics
+RUN apt-get update \
+    && apt-get install -y ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
 COPY --from=builder /workspace/services/actor-rust/target/release/actor /usr/local/bin/actor
