@@ -112,4 +112,4 @@ volumes:
 networks:
   default:
     name: cartridge_network
-    driver: bridge
+    external: true

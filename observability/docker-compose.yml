@@ -6,7 +6,7 @@ version: '3.8'
 networks:
   cartridge:
     name: cartridge_network
-    driver: bridge
+    external: true
   observability:
     name: observability_network
     driver: bridge
@@ -29,6 +29,7 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
     ports:
       - "9090:9090"
     volumes:
