@@ -28,7 +28,7 @@ message ResetRequest  { EngineId id = 1; uint64 seed = 2; bytes hint = 3; }
 message ResetResponse { bytes state = 1; bytes obs = 2; }
 
 message StepRequest   { EngineId id = 1; bytes state = 2; bytes action = 3; }
-message StepResponse  { bytes next_state = 1; bytes obs = 2; float reward = 3; bool done = 4; uint64 info = 5; }
+message StepResponse  { bytes state = 1; bytes obs = 2; float reward = 3; bool done = 4; uint64 info = 5; }
 
 service Engine {
   rpc GetCapabilities(EngineId) returns (Capabilities);
@@ -61,25 +61,40 @@ pub trait Game: Send + Sync + 'static {
     fn capabilities(&self) -> Capabilities;
 
     fn reset(&mut self, rng: &mut ChaCha20Rng, hint: &[u8]) -> (Self::State, Self::Obs);
-    fn step(&mut self, s: &mut Self::State, a: Self::Action) -> (Self::Obs, f32, bool);
+    fn step(&mut self, s: &mut Self::State, a: Self::Action, rng: &mut ChaCha20Rng) -> (Self::Obs, f32, bool, u64);
 
-    fn encode_state(s: &Self::State, out: &mut Vec<u8>);
-    fn decode_state(buf: &[u8]) -> Self::State;
-    fn encode_action(a: &Self::Action, out: &mut Vec<u8>);
-    fn decode_action(buf: &[u8]) -> Self::Action;
-    fn encode_obs(o: &Self::Obs, out: &mut Vec<u8>);
+    fn encode_state(s: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError>;
+    fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError>;
+    fn encode_action(a: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError>;
+    fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError>;
+    fn encode_obs(o: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError>;
 }
 
 // engine-core/src/erased.rs
 pub trait ErasedGame: Send + Sync + 'static {
     fn engine_id(&self) -> EngineId;
     fn capabilities(&self) -> Capabilities;
-    fn reset(&mut self, seed: u64, hint: &[u8], out_state: &mut Vec<u8>, out_obs: &mut Vec<u8>);
-    fn step(&mut self, state: &[u8], action: &[u8], out_state: &mut Vec<u8>, out_obs: &mut Vec<u8>) -> (f32, bool);
+    fn reset(&mut self, seed: u64, hint: &[u8], out_state: &mut Vec<u8>, out_obs: &mut Vec<u8>) -> Result<(), ErasedGameError>;
+    fn step(&mut self, state: &[u8], action: &[u8], out_state: &mut Vec<u8>, out_obs: &mut Vec<u8>) -> Result<(f32, bool, u64), ErasedGameError>;
 }
 ```
 
 A blanket adapter converts any `Game` to `ErasedGame` by calling its encode/decode hooks, letting the server remain generic and allocation-aware.
+
+### Info Field & Error Handling
+
+**Info Field (`u64`):** The step function returns a `u64` info field for packed auxiliary signals. Games can use this for:
+- Bitflags for game-specific conditions (e.g., `CHECKMATE=0x01`, `STALEMATE=0x02`)
+- Compact metrics (e.g., pieces captured, moves remaining)
+- Debug signals packed into bits
+- Any game-specific metadata that doesn't fit into reward/done
+
+**Error Handling:** All encoding/decoding operations return `Result<T, E>`:
+- `EncodeError` variants: `SerializationError`, `BufferTooSmall`, `InvalidData`
+- `DecodeError` variants: `DeserializationError`, `InvalidLength`, `CorruptedData`, `UnsupportedVersion`
+- `ErasedGameError` variants: `Encoding`, `Decoding`, `InvalidState`, `InvalidAction`, `GameLogic`
+
+This explicit error handling enables graceful degradation and detailed debugging when games encounter invalid states or protocol mismatches.
 
 ---
 
@@ -249,12 +264,12 @@ impl Game for Gridworld {
   fn engine_id(&self) -> EngineId { EngineId{ env_id:"gridworld".into(), build_id:BUILD_ID.into() } }
   fn capabilities(&self) -> Capabilities { /* discrete_n=4; encodings v1 */ }
   fn reset(&mut self, rng:&mut ChaCha20Rng, hint:&[u8]) -> (State, Obs) { /* ... */ }
-  fn step(&mut self, s:&mut State, a:Action) -> (Obs, f32, bool) { /* ... */ }
-  fn encode_state(s:&State, out:&mut Vec<u8>) { out.extend_from_slice(&[s.x,s.y,s.w,s.h]); }
-  fn decode_state(b:&[u8]) -> State { State{ x:b[0], y:b[1], w:b[2], h:b[3] } }
-  fn encode_action(a:&Action, out:&mut Vec<u8>) { out.push(match a { Action::Up=>0,Down=>1,Left=>2,Right=>3 }); }
-  fn decode_action(b:&[u8]) -> Action { [Action::Up,Action::Down,Action::Left,Action::Right][b[0] as usize] }
-  fn encode_obs(o:&Obs, out:&mut Vec<u8>) { out.extend_from_slice(bytemuck::bytes_of(&o.0)); }
+  fn step(&mut self, s:&mut State, a:Action, rng:&mut ChaCha20Rng) -> (Obs, f32, bool, u64) { /* ... */ }
+  fn encode_state(s:&State, out:&mut Vec<u8>) -> Result<(), EncodeError> { out.extend_from_slice(&[s.x,s.y,s.w,s.h]); Ok(()) }
+  fn decode_state(b:&[u8]) -> Result<State, DecodeError> { Ok(State{ x:b[0], y:b[1], w:b[2], h:b[3] }) }
+  fn encode_action(a:&Action, out:&mut Vec<u8>) -> Result<(), EncodeError> { out.push(match a { Action::Up=>0,Down=>1,Left=>2,Right=>3 }); Ok(()) }
+  fn decode_action(b:&[u8]) -> Result<Action, DecodeError> { Ok([Action::Up,Action::Down,Action::Left,Action::Right][b[0] as usize]) }
+  fn encode_obs(o:&Obs, out:&mut Vec<u8>) -> Result<(), EncodeError> { out.extend_from_slice(bytemuck::bytes_of(&o.0)); Ok(()) }
 }
 ```
 
