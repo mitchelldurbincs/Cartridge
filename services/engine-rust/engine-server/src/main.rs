@@ -46,7 +46,7 @@ fn initialize_metrics() {
             Ok(socket_addr) => {
                 match PrometheusBuilder::new()
                     .with_http_listener(socket_addr)
-                    .install_recorder()
+                    .install()
                 {
                     Ok(_) => info!(%socket_addr, "Prometheus metrics exporter initialized"),
                     Err(err) => error!(%err, "Failed to install Prometheus metrics exporter"),
