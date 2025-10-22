@@ -1,0 +1,232 @@
+# Prometheus alert rules for Cartridge platform
+# These rules define critical conditions that should trigger alerts
+
+groups:
+  # Learner Service Alerts
+  - name: learner_alerts
+    interval: 30s
+    rules:
+      # Alert when learner heartbeat to orchestrator fails
+      - alert: LearnerHeartbeatFailure
+        expr: learner_heartbeat_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: learner
+        annotations:
+          summary: "Learner heartbeat failing"
+          description: "Learner service cannot communicate with orchestrator (heartbeat_success = 0 for > 2m)"
+
+      # Alert on high replay sampling error rate
+      - alert: HighReplaySampleErrorRate
+        expr: |
+          rate(learner_sample_results_total{result="error"}[5m]) /
+          rate(learner_sample_results_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: learner
+        annotations:
+          summary: "High replay sampling error rate"
+          description: "Learner experiencing >10% error rate when sampling from replay buffer"
+
+      # Alert on stalled training (no SGD steps)
+      - alert: TrainingStalled
+        expr: rate(learner_sgd_steps_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: learner
+        annotations:
+          summary: "Training loop appears stalled"
+          description: "No SGD steps recorded in the last 10 minutes"
+
+      # Alert on slow checkpointing
+      - alert: SlowCheckpointing
+        expr: histogram_quantile(0.95, rate(learner_checkpoint_duration_seconds_bucket[5m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: learner
+        annotations:
+          summary: "Checkpoint operations are slow"
+          description: "P95 checkpoint duration exceeds 60 seconds"
+
+  # Engine Service Alerts
+  - name: engine_alerts
+    interval: 30s
+    rules:
+      # Alert on high RPC failure rate
+      - alert: HighEngineRPCFailureRate
+        expr: |
+          rate(engine_rpc_failures_total[5m]) /
+          (rate(engine_rpc_failures_total[5m]) + rate(engine_rpc_success_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: engine
+        annotations:
+          summary: "High engine RPC failure rate"
+          description: "Engine experiencing >5% RPC failure rate"
+
+      # Alert on slow RPC latency
+      - alert: SlowEngineRPCLatency
+        expr: histogram_quantile(0.99, rate(engine_rpc_latency_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          service: engine
+        annotations:
+          summary: "Engine RPC latency is high"
+          description: "P99 RPC latency exceeds 1 second"
+
+      # Alert on low cache hit rate
+      - alert: LowEngineCacheHitRate
+        expr: |
+          rate(engine_game_cache_hits_total[5m]) /
+          (rate(engine_game_cache_hits_total[5m]) + rate(engine_game_cache_misses_total[5m])) < 0.5
+        for: 10m
+        labels:
+          severity: info
+          service: engine
+        annotations:
+          summary: "Engine cache hit rate is low"
+          description: "Game cache hit rate below 50% for 10+ minutes"
+
+  # Replay Service Alerts
+  - name: replay_alerts
+    interval: 30s
+    rules:
+      # Alert on high replay store error rate
+      - alert: HighReplayStoreErrorRate
+        expr: |
+          rate(replay_store_requests_total{result="error"}[5m]) /
+          rate(replay_store_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: replay
+        annotations:
+          summary: "High replay store error rate"
+          description: "Replay buffer experiencing >5% error rate on store operations"
+
+      # Alert on high replay sample error rate
+      - alert: HighReplaySampleErrorRate
+        expr: |
+          rate(replay_sample_requests_total{result="error"}[5m]) /
+          rate(replay_sample_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: replay
+        annotations:
+          summary: "High replay sample error rate"
+          description: "Replay buffer experiencing >5% error rate on sample operations"
+
+      # Alert on slow replay operations
+      - alert: SlowReplayOperations
+        expr: histogram_quantile(0.95, rate(replay_store_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: replay
+        annotations:
+          summary: "Replay store operations are slow"
+          description: "P95 replay store duration exceeds 500ms"
+
+  # Orchestrator Service Alerts
+  - name: orchestrator_alerts
+    interval: 30s
+    rules:
+      # Alert on stale heartbeats
+      - alert: HighHealthEventRate
+        expr: rate(orchestrator_health_events_total{severity="error"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: orchestrator
+        annotations:
+          summary: "High rate of health monitoring errors"
+          description: "Orchestrator detecting frequent health issues (stale/unresponsive heartbeats)"
+
+      # Alert on slow HTTP requests
+      - alert: SlowOrchestratorAPI
+        expr: histogram_quantile(0.95, rate(orchestrator_http_request_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          service: orchestrator
+        annotations:
+          summary: "Orchestrator API requests are slow"
+          description: "P95 HTTP request duration exceeds 2 seconds"
+
+  # Actor Service Alerts
+  - name: actor_alerts
+    interval: 30s
+    rules:
+      # Alert on high episode failure rate
+      - alert: HighActorEpisodeFailureRate
+        expr: |
+          rate(actor_episode_results_total{result="error"}[5m]) /
+          rate(actor_episode_results_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: actor
+        annotations:
+          summary: "High actor episode failure rate"
+          description: "Actor experiencing >10% episode failure rate"
+
+      # Alert on high flush failure rate
+      - alert: HighActorFlushFailureRate
+        expr: |
+          rate(actor_flush_results_total{result="error"}[5m]) /
+          rate(actor_flush_results_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: actor
+        annotations:
+          summary: "High actor replay flush failure rate"
+          description: "Actor experiencing >5% failure rate when flushing to replay"
+
+  # Weights Service Alerts
+  - name: weights_alerts
+    interval: 30s
+    rules:
+      # Alert on high weights publish failure rate
+      - alert: HighWeightsPublishFailureRate
+        expr: |
+          rate(weights_publish_total{status="failure"}[5m]) /
+          rate(weights_publish_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: weights
+        annotations:
+          summary: "High weights publish failure rate"
+          description: "Weights service experiencing >10% publish failure rate"
+
+  # System-Wide Alerts
+  - name: system_alerts
+    interval: 30s
+    rules:
+      # Alert when service is down (no metrics)
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape metrics from {{ $labels.job }} for > 2 minutes"
+
+      # Alert on high scrape duration
+      - alert: SlowMetricsScrape
+        expr: scrape_duration_seconds > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow metrics scrape for {{ $labels.job }}"
+          description: "Scraping metrics from {{ $labels.job }} takes > 5 seconds"
