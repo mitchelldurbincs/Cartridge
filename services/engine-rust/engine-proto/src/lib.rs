@@ -1,10 +1,13 @@
-// Generated protobuf code
-tonic::include_proto!("engine.v1");
+// Generated protobuf code wrapped in module structure
+pub mod engine {
+    pub mod v1 {
+        tonic::include_proto!("engine.v1");
+    }
+}
 
-// The generated code nests everything under the `engine::v1` module. Re-export the
-// frequently used items at the crate root so downstream crates can follow the
-// conventional `engine_proto::TypeName` style without having to know the nested
-// module structure produced by `tonic::include_proto!`.
+// Re-export frequently used items at the crate root so downstream crates can follow
+// the conventional `engine_proto::TypeName` style without having to know the nested
+// module structure.
 pub use self::engine::v1::capabilities;
 pub use self::engine::v1::engine_client::{self, EngineClient};
 pub use self::engine::v1::engine_server::{self, Engine, EngineServer};
