@@ -50,6 +50,13 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
     _seed_everything(config.training.seed)
     _LOGGER.info("Random seeds initialized", seed=config.training.seed)
 
+    metrics: MetricsRegistry | None = None
+    weights: WeightPublisher | None = None
+    checkpoints: CheckpointManager | None = None
+    control: ControlClient | None = None
+    replay: ReplayClient | None = None
+    learner: LearnerCore | None = None
+
     try:
         # Initialize components
         _LOGGER.info("Initializing service components")
@@ -108,16 +115,51 @@ async def _run_async(config_path: Path, overrides: list[str]) -> None:
         raise
     finally:
         _LOGGER.info("Shutting down learner service")
-        try:
-            await learner.stop()
-            await control.close()
-            _LOGGER.info("Learner service shutdown completed successfully")
-        except Exception as exc:
-            _LOGGER.error(
-                "Error during learner service shutdown",
-                error=str(exc),
-                error_type=type(exc).__name__
-            )
+
+        if learner is not None:
+            try:
+                await learner.stop()
+                # ``LearnerCore.stop`` handles replay and weights shutdown when available.
+                replay = None
+                weights = None
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error while stopping learner core",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        if replay is not None:
+            try:
+                await replay.stop()
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error while stopping replay client",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        if weights is not None:
+            try:
+                await weights.close()
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error while closing weight publisher",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        if control is not None:
+            try:
+                await control.close()
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error while closing control client",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        _LOGGER.info("Learner service shutdown completed")
 
 
 def run(argv: list[str] | None = None) -> None:
