@@ -5,6 +5,31 @@ from __future__ import annotations
 import torch
 
 
+@torch.jit.script
+def _compute_gae_impl(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    gae_lambda: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """TorchScript friendly core of the GAE computation."""
+
+    time_steps = rewards.size(0)
+    advantages = torch.zeros_like(rewards)
+    gae = torch.zeros_like(rewards[0])
+    discount = gamma * gae_lambda
+
+    for index in range(time_steps - 1, -1, -1):
+        mask = 1.0 - dones[index]
+        delta = rewards[index] + gamma * values[index + 1] * mask - values[index]
+        gae = delta + discount * mask * gae
+        advantages[index] = gae
+
+    returns = advantages + values[:-1]
+    return advantages, returns
+
+
 def compute_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
@@ -60,17 +85,13 @@ def compute_gae(
     if values.shape[0] != rewards.shape[0] + 1:
         raise ValueError("Values must have one more timestep than rewards for bootstrapping")
 
-    device = rewards.device
-    advantages = torch.zeros_like(rewards, device=device)
-    gae = torch.zeros(rewards.shape[1], device=device)
-
-    for t in reversed(range(rewards.shape[0])):
-        mask = 1.0 - dones[t]
-        delta = rewards[t] + gamma * values[t + 1] * mask - values[t]
-        gae = delta + gamma * gae_lambda * mask * gae
-        advantages[t] = gae
-
-    returns = advantages + values[:-1]
+    advantages, returns = _compute_gae_impl(
+        rewards,
+        values,
+        dones,
+        gamma,
+        gae_lambda,
+    )
 
     if rewards_was_1d:
         advantages = advantages.squeeze(-1)
