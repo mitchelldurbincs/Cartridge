@@ -37,5 +37,8 @@ metrics-exporter-prometheus = { workspace = true }
 # Serialization
 prost = { workspace = true }
 
+# Concurrent data structures
+dashmap = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
