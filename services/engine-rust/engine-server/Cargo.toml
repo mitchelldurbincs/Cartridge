@@ -42,3 +42,4 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+once_cell = { workspace = true }

@@ -210,6 +210,13 @@ impl Engine for EngineService {
                 .value_mut()
                 .reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf)
         {
+            tracing::error!(
+                error = %e,
+                env_id = %env_id,
+                seed = req.seed,
+                hint_size = req.hint.len(),
+                "Reset operation failed"
+            );
             counter!(
                 "engine_rpc_failures_total",
                 1,
@@ -217,7 +224,13 @@ impl Engine for EngineService {
                 "error" => "reset_failed"
             );
             Self::observe_rpc_latency("reset", start);
-            return Err(Status::internal(format!("Reset failed: {}", e)));
+            return Err(Status::internal(format!(
+                "Reset failed: {} (env_id={}, seed={}, hint_size={})",
+                e,
+                env_id,
+                req.seed,
+                req.hint.len()
+            )));
         }
 
         // Explicitly drop the entry to release the lock
@@ -313,6 +326,13 @@ impl Engine for EngineService {
             match game_entry.step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf) {
                 Ok(result) => result,
                 Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        env_id = %env_id,
+                        state_size = req.state.len(),
+                        action_size = req.action.len(),
+                        "Step operation failed"
+                    );
                     counter!(
                         "engine_rpc_failures_total",
                         1,
@@ -320,7 +340,13 @@ impl Engine for EngineService {
                         "error" => "step_failed"
                     );
                     Self::observe_rpc_latency("step", start);
-                    return Err(Status::internal(format!("Step failed: {}", e)));
+                    return Err(Status::internal(format!(
+                        "Step failed: {} (env_id={}, state_size={}, action_size={})",
+                        e,
+                        env_id,
+                        req.state.len(),
+                        req.action.len()
+                    )));
                 }
             };
 
