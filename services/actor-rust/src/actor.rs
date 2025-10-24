@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use metrics::{counter, gauge, histogram};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, timeout};
 use tonic::{transport::Channel, Request};
@@ -16,9 +19,9 @@ pub struct Actor {
     engine_client: EngineClient<Channel>,
     replay_client: ReplayClient<Channel>,
     policy: Arc<Mutex<Box<dyn Policy>>>,
-    episode_count: Arc<Mutex<u32>>,
+    episode_count: Arc<AtomicU32>,
     transition_buffer: Arc<Mutex<Vec<Transition>>>,
-    shutdown_signal: Arc<Mutex<bool>>,
+    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl Actor {
@@ -84,9 +87,9 @@ impl Actor {
             engine_client,
             replay_client,
             policy: Arc::new(Mutex::new(Box::new(policy))),
-            episode_count: Arc::new(Mutex::new(0)),
+            episode_count: Arc::new(AtomicU32::new(0)),
             transition_buffer: Arc::new(Mutex::new(Vec::new())),
-            shutdown_signal: Arc::new(Mutex::new(false)),
+            shutdown_signal: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -104,7 +107,7 @@ impl Actor {
 
         loop {
             // Check shutdown signal
-            if *self.shutdown_signal.lock().unwrap() {
+            if self.shutdown_signal.load(Ordering::Relaxed) {
                 info!("Shutdown signal received, stopping actor");
                 break;
             }
@@ -123,7 +126,7 @@ impl Actor {
 
                 _ = tokio::time::sleep(Duration::from_millis(1)) => {
                     // Check episode limit
-                    let current_episode_count = *self.episode_count.lock().unwrap();
+                    let current_episode_count = self.episode_count.load(Ordering::Relaxed);
                     if self.config.max_episodes > 0 && current_episode_count >= self.config.max_episodes as u32 {
                         info!("Reached maximum episodes ({}), stopping", self.config.max_episodes);
                         break;
@@ -134,8 +137,7 @@ impl Actor {
                     let env_label = self.config.env_id.clone();
                     match self.run_episode().await {
                         Ok((steps, total_reward)) => {
-                            let mut count = self.episode_count.lock().unwrap();
-                            *count += 1;
+                            let new_count = self.episode_count.fetch_add(1, Ordering::Relaxed) + 1;
                             let duration = episode_start.elapsed().as_secs_f64();
                             counter!(
                                 "actor_episode_results_total",
@@ -159,12 +161,12 @@ impl Actor {
                                 total_reward as f64,
                                 "env_id" => env_label.clone()
                             );
-                            if *count % 10 == 0 {
-                                info!("Completed {} episodes", *count);
+                            if new_count % 10 == 0 {
+                                info!("Completed {} episodes", new_count);
                             }
                         }
                         Err(e) => {
-                            let count = *self.episode_count.lock().unwrap();
+                            let count = self.episode_count.load(Ordering::Relaxed);
                             error!("Episode {} failed: {}", count + 1, e);
                             let duration = episode_start.elapsed().as_secs_f64();
                             counter!(
@@ -193,12 +195,12 @@ impl Actor {
     }
 
     pub async fn shutdown(&self) {
-        *self.shutdown_signal.lock().unwrap() = true;
+        self.shutdown_signal.store(true, Ordering::Relaxed);
         info!("Shutdown signal set");
     }
 
     async fn run_episode(&self) -> Result<(u32, f32)> {
-        let episode_count = *self.episode_count.lock().unwrap();
+        let episode_count = self.episode_count.load(Ordering::Relaxed);
 
         // Reset the game
         let reset_request = Request::new(ResetRequest {
@@ -399,7 +401,10 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU32},
+        Arc, Mutex,
+    };
     use tokio::sync::oneshot;
     use tonic::transport::{Endpoint, Server};
     use tonic::{Response, Status};
@@ -571,9 +576,9 @@ mod tests {
             engine_client,
             replay_client,
             policy: Arc::new(Mutex::new(Box::new(TestPolicy))),
-            episode_count: Arc::new(Mutex::new(0)),
+            episode_count: Arc::new(AtomicU32::new(0)),
             transition_buffer: Arc::new(Mutex::new(Vec::new())),
-            shutdown_signal: Arc::new(Mutex::new(false)),
+            shutdown_signal: Arc::new(AtomicBool::new(false)),
         };
 
         let first_transition = Transition {
@@ -661,9 +666,9 @@ mod tests {
             engine_client,
             replay_client,
             policy: Arc::new(Mutex::new(Box::new(TestPolicy))),
-            episode_count: Arc::new(Mutex::new(0)),
+            episode_count: Arc::new(AtomicU32::new(0)),
             transition_buffer: Arc::new(Mutex::new(Vec::new())),
-            shutdown_signal: Arc::new(Mutex::new(false)),
+            shutdown_signal: Arc::new(AtomicBool::new(false)),
         };
 
         let first_transition = Transition {
@@ -693,10 +698,17 @@ mod tests {
         }
 
         let result = actor.flush_buffer().await;
-        assert!(result.is_err(), "flush should fail when replay returns error");
+        assert!(
+            result.is_err(),
+            "flush should fail when replay returns error"
+        );
 
         let buffer = actor.transition_buffer.lock().unwrap();
-        assert_eq!(buffer.len(), 2, "buffer should retain transitions after failure");
+        assert_eq!(
+            buffer.len(),
+            2,
+            "buffer should retain transitions after failure"
+        );
         assert_eq!(buffer[0], first_transition);
         assert_eq!(buffer[1], second_transition);
         drop(buffer);

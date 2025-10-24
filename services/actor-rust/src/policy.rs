@@ -1,7 +1,7 @@
+use crate::proto::engine::v1::Capabilities;
 use anyhow::{anyhow, Result};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
-use crate::proto::engine::v1::Capabilities;
 
 /// Trait for action selection policies
 pub trait Policy: Send + Sync {
@@ -30,7 +30,7 @@ impl RandomPolicy {
             }
             Some(crate::proto::engine::v1::capabilities::ActionSpace::Multi(multi)) => {
                 ActionSpace::MultiDiscrete {
-                    nvec: multi.nvec.clone()
+                    nvec: multi.nvec.clone(),
                 }
             }
             Some(crate::proto::engine::v1::capabilities::ActionSpace::Continuous(box_spec)) => {
@@ -58,7 +58,7 @@ impl RandomPolicy {
             }
             Some(crate::proto::engine::v1::capabilities::ActionSpace::Multi(multi)) => {
                 ActionSpace::MultiDiscrete {
-                    nvec: multi.nvec.clone()
+                    nvec: multi.nvec.clone(),
                 }
             }
             Some(crate::proto::engine::v1::capabilities::ActionSpace::Continuous(box_spec)) => {
@@ -104,12 +104,16 @@ impl Policy for RandomPolicy {
             }
             ActionSpace::Continuous { low, high } => {
                 if low.len() != high.len() {
-                    return Err(anyhow!("Continuous action space low and high bounds must have same length"));
+                    return Err(anyhow!(
+                        "Continuous action space low and high bounds must have same length"
+                    ));
                 }
                 let mut action_bytes = Vec::new();
                 for (&low_val, &high_val) in low.iter().zip(high.iter()) {
                     if low_val >= high_val {
-                        return Err(anyhow!("Continuous action space low bound must be less than high bound"));
+                        return Err(anyhow!(
+                            "Continuous action space low bound must be less than high bound"
+                        ));
                     }
                     let action: f32 = self.rng.gen_range(low_val..high_val);
                     action_bytes.extend_from_slice(&action.to_le_bytes());
@@ -123,9 +127,11 @@ impl Policy for RandomPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::engine::v1::{Capabilities, EngineId, Encoding, MultiDiscrete, BoxSpec};
+    use crate::proto::engine::v1::{BoxSpec, Capabilities, Encoding, EngineId, MultiDiscrete};
 
-    fn create_test_capabilities(action_space: crate::proto::engine::v1::capabilities::ActionSpace) -> Capabilities {
+    fn create_test_capabilities(
+        action_space: crate::proto::engine::v1::capabilities::ActionSpace,
+    ) -> Capabilities {
         Capabilities {
             id: Some(EngineId {
                 env_id: "test".to_string(),
@@ -146,7 +152,7 @@ mod tests {
     #[test]
     fn test_discrete_action_space() {
         let caps = create_test_capabilities(
-            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(4)
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(4),
         );
         let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
 
@@ -163,7 +169,7 @@ mod tests {
         let caps = create_test_capabilities(
             crate::proto::engine::v1::capabilities::ActionSpace::Multi(MultiDiscrete {
                 nvec: vec![2, 3, 4],
-            })
+            }),
         );
         let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
 
@@ -188,7 +194,7 @@ mod tests {
                 low: vec![-1.0, 0.0],
                 high: vec![1.0, 2.0],
                 shape: vec![2],
-            })
+            }),
         );
         let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
 
