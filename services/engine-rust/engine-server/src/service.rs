@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use engine_core::registry::{create_game, is_registered};
 use engine_core::ErasedGame;
 use engine_proto::{
@@ -181,19 +181,35 @@ impl Engine for EngineService {
         let mut obs_buf = self.buffer_pool.get_obs_buffer();
 
         // Use DashMap's entry API for lock-free concurrent access
-        let mut game_entry = self.game_cache.entry(key).or_insert_with(|| {
-            counter!("engine_game_cache_misses_total", 1, "method" => "reset");
-            create_game(&env_id).expect("Game should exist")
-        });
+        let mut game_entry = match self.game_cache.entry(key) {
+            Entry::Occupied(entry) => {
+                counter!("engine_game_cache_hits_total", 1, "method" => "reset");
+                entry.into_mut()
+            }
+            Entry::Vacant(entry) => {
+                counter!("engine_game_cache_misses_total", 1, "method" => "reset");
+                let Some(game) = create_game(env_id.as_ref()) else {
+                    counter!(
+                        "engine_rpc_failures_total",
+                        1,
+                        "method" => "reset",
+                        "error" => "unknown_env"
+                    );
+                    Self::observe_rpc_latency("reset", start);
+                    return Err(Status::not_found(format!("Unknown env_id: {}", env_id)));
+                };
+                entry.insert(game)
+            }
+        };
 
-        if game_entry.is_first_insert() {
-            gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
-        } else {
-            counter!("engine_game_cache_hits_total", 1, "method" => "reset");
-        }
+        gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
 
         // Perform reset
-        if let Err(e) = game_entry.value_mut().reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf) {
+        if let Err(e) =
+            game_entry
+                .value_mut()
+                .reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf)
+        {
             counter!(
                 "engine_rpc_failures_total",
                 1,
