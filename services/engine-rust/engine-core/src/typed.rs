@@ -341,4 +341,286 @@ mod tests {
         assert!(!done);
         assert_eq!(info, state.0 as u64);
     }
+
+    // Test game with MultiDiscrete action space
+    #[derive(Debug)]
+    struct MultiDiscreteGame;
+
+    impl Game for MultiDiscreteGame {
+        type State = u32;
+        type Action = Vec<u8>;
+        type Obs = Vec<f32>;
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: "multi_discrete_test".to_string(),
+                build_id: "0.1.0".to_string(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "u32:v1".to_string(),
+                    action: "vec_u8:v1".to_string(),
+                    obs: "f32_vec:v1".to_string(),
+                    schema_version: 1,
+                },
+                max_horizon: 100,
+                action_space: ActionSpace::MultiDiscrete(vec![3, 4, 5]),
+                preferred_batch: 16,
+            }
+        }
+
+        fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            (0, vec![0.0])
+        }
+
+        fn step(
+            &mut self,
+            state: &mut Self::State,
+            action: Self::Action,
+            _rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            *state += action.iter().map(|&a| a as u32).sum::<u32>();
+            (vec![*state as f32], 1.0, *state >= 20, 0)
+        }
+
+        fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.extend_from_slice(&state.to_le_bytes());
+            Ok(())
+        }
+
+        fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+            if buf.len() != 4 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 4,
+                    actual: buf.len(),
+                });
+            }
+            Ok(u32::from_le_bytes(buf.try_into().unwrap()))
+        }
+
+        fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.extend_from_slice(action);
+            Ok(())
+        }
+
+        fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            Ok(buf.to_vec())
+        }
+
+        fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            for &value in obs {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_multi_discrete_action_space() {
+        let game = MultiDiscreteGame;
+        let caps = game.capabilities();
+
+        match caps.action_space {
+            ActionSpace::MultiDiscrete(ref nvec) => {
+                assert_eq!(nvec, &vec![3, 4, 5]);
+            }
+            _ => panic!("Expected MultiDiscrete action space"),
+        }
+    }
+
+    #[test]
+    fn test_multi_discrete_game_functionality() {
+        let mut game = MultiDiscreteGame;
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+
+        let (state, obs) = game.reset(&mut rng, &[]);
+        assert_eq!(state, 0);
+        assert_eq!(obs, vec![0.0]);
+
+        let mut state = state;
+        let action = vec![2, 3, 1]; // Valid actions for [3, 4, 5] space
+        let (obs, reward, done, _info) = game.step(&mut state, action, &mut rng);
+
+        assert_eq!(state, 6); // 2 + 3 + 1
+        assert_eq!(obs, vec![6.0]);
+        assert_eq!(reward, 1.0);
+        assert!(!done);
+    }
+
+    #[test]
+    fn test_multi_discrete_action_encoding() {
+        let action = vec![1, 2, 3];
+        let mut buf = Vec::new();
+
+        MultiDiscreteGame::encode_action(&action, &mut buf).unwrap();
+        let decoded = MultiDiscreteGame::decode_action(&buf).unwrap();
+
+        assert_eq!(action, decoded);
+    }
+
+    // Test game with Continuous action space
+    #[derive(Debug)]
+    struct ContinuousGame;
+
+    impl Game for ContinuousGame {
+        type State = f32;
+        type Action = Vec<f32>;
+        type Obs = Vec<f32>;
+
+        fn engine_id(&self) -> EngineId {
+            EngineId {
+                env_id: "continuous_test".to_string(),
+                build_id: "0.1.0".to_string(),
+            }
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                id: self.engine_id(),
+                encoding: Encoding {
+                    state: "f32:v1".to_string(),
+                    action: "f32_vec:v1".to_string(),
+                    obs: "f32_vec:v1".to_string(),
+                    schema_version: 1,
+                },
+                max_horizon: 200,
+                action_space: ActionSpace::Continuous {
+                    low: vec![-1.0, -2.0],
+                    high: vec![1.0, 2.0],
+                    shape: vec![2],
+                },
+                preferred_batch: 64,
+            }
+        }
+
+        fn reset(&mut self, _rng: &mut ChaCha20Rng, _hint: &[u8]) -> (Self::State, Self::Obs) {
+            (0.0, vec![0.0, 0.0])
+        }
+
+        fn step(
+            &mut self,
+            state: &mut Self::State,
+            action: Self::Action,
+            _rng: &mut ChaCha20Rng,
+        ) -> (Self::Obs, f32, bool, u64) {
+            let action_sum: f32 = action.iter().sum();
+            *state += action_sum;
+            (vec![*state, action_sum], action_sum, state.abs() >= 10.0, 0)
+        }
+
+        fn encode_state(state: &Self::State, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            out.extend_from_slice(&state.to_le_bytes());
+            Ok(())
+        }
+
+        fn decode_state(buf: &[u8]) -> Result<Self::State, DecodeError> {
+            if buf.len() != 4 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 4,
+                    actual: buf.len(),
+                });
+            }
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(buf);
+            Ok(f32::from_le_bytes(bytes))
+        }
+
+        fn encode_action(action: &Self::Action, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            for &value in action {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(())
+        }
+
+        fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
+            if buf.len() % 4 != 0 {
+                return Err(DecodeError::InvalidLength {
+                    expected: 0, // Multiple of 4
+                    actual: buf.len(),
+                });
+            }
+            let mut result = Vec::new();
+            for chunk in buf.chunks_exact(4) {
+                let mut bytes = [0u8; 4];
+                bytes.copy_from_slice(chunk);
+                result.push(f32::from_le_bytes(bytes));
+            }
+            Ok(result)
+        }
+
+        fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+            for &value in obs {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_continuous_action_space() {
+        let game = ContinuousGame;
+        let caps = game.capabilities();
+
+        match caps.action_space {
+            ActionSpace::Continuous {
+                ref low,
+                ref high,
+                ref shape,
+            } => {
+                assert_eq!(low, &vec![-1.0, -2.0]);
+                assert_eq!(high, &vec![1.0, 2.0]);
+                assert_eq!(shape, &vec![2]);
+            }
+            _ => panic!("Expected Continuous action space"),
+        }
+    }
+
+    #[test]
+    fn test_continuous_game_functionality() {
+        let mut game = ContinuousGame;
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+
+        let (state, obs) = game.reset(&mut rng, &[]);
+        assert_eq!(state, 0.0);
+        assert_eq!(obs, vec![0.0, 0.0]);
+
+        let mut state = state;
+        let action = vec![0.5, 1.5]; // Valid actions within [-1, 1] and [-2, 2]
+        let (obs, reward, done, _info) = game.step(&mut state, action, &mut rng);
+
+        assert_eq!(state, 2.0); // 0.5 + 1.5
+        assert_eq!(obs, vec![2.0, 2.0]);
+        assert_eq!(reward, 2.0);
+        assert!(!done);
+    }
+
+    #[test]
+    fn test_continuous_action_encoding() {
+        let action = vec![0.5, -1.5, 2.0];
+        let mut buf = Vec::new();
+
+        ContinuousGame::encode_action(&action, &mut buf).unwrap();
+        let decoded = ContinuousGame::decode_action(&buf).unwrap();
+
+        // Use approximate equality for floats
+        assert_eq!(decoded.len(), action.len());
+        for (a, d) in action.iter().zip(decoded.iter()) {
+            assert!((a - d).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_continuous_state_encoding() {
+        let state = 3.14159;
+        let mut buf = Vec::new();
+
+        ContinuousGame::encode_state(&state, &mut buf).unwrap();
+        let decoded = ContinuousGame::decode_state(&buf).unwrap();
+
+        assert!((state - decoded).abs() < 1e-6);
+    }
 }
