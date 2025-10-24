@@ -15,4 +15,6 @@ pub mod registry;
 pub use typed::Game;
 pub use erased::ErasedGame;
 pub use adapter::GameAdapter;
-pub use registry::{register_game, create_game, GameFactory};
+pub use registry::{
+    clear_registry, create_game, is_registered, list_registered_games, register_game, GameFactory,
+};
