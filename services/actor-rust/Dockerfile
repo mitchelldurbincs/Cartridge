@@ -36,9 +36,9 @@ RUN cargo build --release
 # Then use: FROM debian:bookworm-slim@sha256:<hash>
 FROM debian:bookworm-slim
 
-# Install only ca-certificates (needed for HTTPS connections)
+# Install curl for healthchecks and ca-certificates for HTTPS connections
 RUN apt-get update \
-    && apt-get install -y ca-certificates \
+    && apt-get install -y ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
