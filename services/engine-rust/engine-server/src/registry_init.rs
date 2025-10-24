@@ -31,9 +31,14 @@ pub fn initialize_registry() {
 mod tests {
     use super::*;
     use engine_core::registry::{clear_registry, create_game, is_registered, list_registered_games};
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+
+    static REGISTRY_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn test_initialize_registry_registers_tictactoe() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
         // Clear registry for clean test
         clear_registry();
 
@@ -46,6 +51,7 @@ mod tests {
 
     #[test]
     fn test_initialize_registry_creates_working_game() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
         clear_registry();
         initialize_registry();
 
@@ -60,6 +66,7 @@ mod tests {
 
     #[test]
     fn test_initialize_registry_lists_correct_games() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
         clear_registry();
         initialize_registry();
 
@@ -70,6 +77,7 @@ mod tests {
 
     #[test]
     fn test_initialize_registry_idempotent() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
         clear_registry();
 
         // Initialize twice
@@ -84,6 +92,7 @@ mod tests {
 
     #[test]
     fn test_initialize_registry_creates_functional_game() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
         use rand::SeedableRng;
         use rand_chacha::ChaCha20Rng;
 
