@@ -94,10 +94,11 @@ func (m *Monitor) checkStaleHeartbeats(ctx context.Context) {
 }
 
 func (m *Monitor) markStale(ctx context.Context, run types.Run) {
-	m.logger.Warn().
-		Str("run_id", run.ID).
-		Time("last_heartbeat", *run.LastHeartbeatAt).
-		Msg("Marking run as stale")
+	logEvent := m.logger.Warn().Str("run_id", run.ID)
+	if run.LastHeartbeatAt != nil {
+		logEvent = logEvent.Time("last_heartbeat", *run.LastHeartbeatAt)
+	}
+	logEvent.Msg("Marking run as stale")
 
 	if m.metrics != nil {
 		m.metrics.RecordHealthEvent("heartbeat_stale", "warning")
@@ -123,10 +124,11 @@ func (m *Monitor) markStale(ctx context.Context, run types.Run) {
 }
 
 func (m *Monitor) markUnresponsive(ctx context.Context, run types.Run) {
-	m.logger.Error().
-		Str("run_id", run.ID).
-		Time("last_heartbeat", *run.LastHeartbeatAt).
-		Msg("Marking run as unresponsive")
+	logEvent := m.logger.Error().Str("run_id", run.ID)
+	if run.LastHeartbeatAt != nil {
+		logEvent = logEvent.Time("last_heartbeat", *run.LastHeartbeatAt)
+	}
+	logEvent.Msg("Marking run as unresponsive")
 
 	if m.metrics != nil {
 		m.metrics.RecordHealthEvent("heartbeat_unresponsive", "critical")
