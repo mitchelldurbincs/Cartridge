@@ -54,8 +54,10 @@ WORKDIR /workspace/services/learner-py
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /workspace/services/learner-py ./
 
-# Create non-root user
-RUN useradd -r -u 1000 learner
+# Create non-root user and provision writable directories
+RUN useradd -r -u 1000 -m -d /home/learner learner \
+    && mkdir -p /checkpoints \
+    && chown -R learner:learner /home/learner /workspace/services/learner-py /checkpoints
 
 # Expose Prometheus metrics port
 EXPOSE 9001
