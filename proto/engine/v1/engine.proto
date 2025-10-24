@@ -73,6 +73,44 @@ message StepResponse {
     uint64 info = 5;        // Additional packed info bits (game-specific semantics)
 }
 
+// Single trajectory configuration for batch simulation
+message TrajectoryConfig {
+    uint64 seed = 1;        // Random seed for this trajectory
+    bytes hint = 2;         // Optional setup hint
+    uint32 max_steps = 3;   // Maximum steps before forced termination
+}
+
+// Request for batch simulation of multiple trajectories
+message BatchSimulateRequest {
+    EngineId id = 1;                        // Engine to use
+    repeated TrajectoryConfig trajectories = 2; // Configurations for each trajectory
+    bool return_states = 3;                 // Whether to include states in response
+    bool return_observations = 4;           // Whether to include observations
+}
+
+// Single step within a trajectory result
+message SimStep {
+    bytes state = 1;        // State at this step (if requested)
+    bytes action = 2;       // Action taken at this step
+    bytes obs = 3;          // Observation at this step (if requested)
+    float reward = 4;       // Reward received
+    bool done = 5;          // Whether episode terminated
+}
+
+// Complete trajectory result
+message TrajectoryResult {
+    uint32 trajectory_id = 1;                // Index of this trajectory in the batch
+    repeated SimStep steps = 2;              // All steps in the trajectory
+    uint32 total_steps = 3;                  // Total number of steps taken
+    float total_reward = 4;                  // Sum of all rewards in trajectory
+}
+
+// Streaming chunk of simulation results
+message SimResultChunk {
+    repeated TrajectoryResult trajectories = 1; // Completed trajectories in this chunk
+    bool final_chunk = 2;                       // Whether this is the last chunk
+}
+
 
 // Engine service definition
 service Engine {
@@ -84,4 +122,7 @@ service Engine {
 
     // Perform single simulation step
     rpc Step(StepRequest) returns (StepResponse);
+
+    // Perform batch simulation with streaming results
+    rpc BatchSimulate(BatchSimulateRequest) returns (stream SimResultChunk);
 }
