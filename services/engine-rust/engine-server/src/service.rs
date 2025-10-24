@@ -3,6 +3,7 @@
 //! This module provides the Tonic-based gRPC server implementation that handles
 //! all engine service methods with proper error handling and buffer management.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,13 +11,14 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use engine_core::registry::{create_game, is_registered};
 use engine_core::ErasedGame;
 use engine_proto::{
-    engine_server::Engine, BoxSpec as ProtoBoxSpec, Capabilities, Encoding as ProtoEncoding,
-    EngineId, MultiDiscrete as ProtoMultiDiscrete, ResetRequest, ResetResponse, StepRequest,
-    StepResponse,
+    engine_server::Engine, BatchSimulateRequest, BoxSpec as ProtoBoxSpec, Capabilities,
+    Encoding as ProtoEncoding, EngineId, MultiDiscrete as ProtoMultiDiscrete, ResetRequest,
+    ResetResponse, SimResultChunk, StepRequest, StepResponse,
 };
 use tonic::{Request, Response, Result as TonicResult, Status};
 
 use metrics::{counter, gauge, histogram};
+use tokio_stream::Stream;
 
 use crate::buffers::BufferPool;
 
@@ -100,6 +102,8 @@ impl Default for EngineService {
 
 #[tonic::async_trait]
 impl Engine for EngineService {
+    type BatchSimulateStream = Pin<Box<dyn Stream<Item = Result<SimResultChunk, Status>> + Send>>;
+
     async fn get_capabilities(
         &self,
         request: Request<EngineId>,
@@ -184,7 +188,7 @@ impl Engine for EngineService {
         let mut game_entry = match self.game_cache.entry(key) {
             Entry::Occupied(entry) => {
                 counter!("engine_game_cache_hits_total", 1, "method" => "reset");
-                entry.into_mut()
+                entry.into_ref()
             }
             Entry::Vacant(entry) => {
                 counter!("engine_game_cache_misses_total", 1, "method" => "reset");
@@ -293,7 +297,7 @@ impl Engine for EngineService {
         // Convert to Arc<str> for efficient cache key
         let env_id: Arc<str> = Arc::from(engine_id.env_id.as_str());
         let build_id: Arc<str> = Arc::from(engine_id.build_id.as_str());
-        let key = (env_id, build_id);
+        let key = (env_id.clone(), build_id.clone());
 
         // Use DashMap's get_mut for fine-grained locking
         let mut game_entry = match self.game_cache.get_mut(&key) {
@@ -375,6 +379,24 @@ impl Engine for EngineService {
         Self::observe_rpc_latency("step", start);
 
         Ok(Response::new(response))
+    }
+
+    async fn batch_simulate(
+        &self,
+        _request: Request<BatchSimulateRequest>,
+    ) -> TonicResult<Response<Self::BatchSimulateStream>> {
+        counter!("engine_rpc_requests_total", 1, "method" => "batch_simulate");
+        let start = Instant::now();
+
+        counter!(
+            "engine_rpc_failures_total",
+            1,
+            "method" => "batch_simulate",
+            "error" => "unimplemented"
+        );
+        Self::observe_rpc_latency("batch_simulate", start);
+
+        Err(Status::unimplemented("BatchSimulate is not yet implemented"))
     }
 }
 
