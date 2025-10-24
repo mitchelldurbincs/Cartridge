@@ -3,10 +3,10 @@
 //! This module provides the Tonic-based gRPC server implementation that handles
 //! all engine service methods with proper error handling and buffer management.
 
-use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
+use dashmap::{mapref::entry::Entry, DashMap};
 use engine_core::registry::{create_game, is_registered};
 use engine_core::ErasedGame;
 use engine_proto::{
@@ -14,7 +14,6 @@ use engine_proto::{
     EngineId, MultiDiscrete as ProtoMultiDiscrete, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
 };
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Result as TonicResult, Status};
 
 use metrics::{counter, gauge, histogram};
@@ -25,7 +24,7 @@ use crate::buffers::BufferPool;
 #[derive(Debug)]
 pub struct EngineService {
     buffer_pool: BufferPool,
-    game_cache: Arc<Mutex<HashMap<(String, String), Box<dyn ErasedGame>>>>,
+    game_cache: Arc<DashMap<(Arc<str>, Arc<str>), Box<dyn ErasedGame>>>,
 }
 
 impl EngineService {
@@ -33,7 +32,7 @@ impl EngineService {
     pub fn new() -> Self {
         Self {
             buffer_pool: BufferPool::with_capacity(100, 100, 50, 512),
-            game_cache: Arc::new(Mutex::new(HashMap::new())),
+            game_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -41,7 +40,7 @@ impl EngineService {
     pub fn with_buffer_pool(buffer_pool: BufferPool) -> Self {
         Self {
             buffer_pool,
-            game_cache: Arc::new(Mutex::new(HashMap::new())),
+            game_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -172,46 +171,52 @@ impl Engine for EngineService {
             }
         };
 
-        let env_id = engine_id.env_id.clone();
-        let build_id = engine_id.build_id.clone();
+        // Convert to Arc<str> for efficient cache key
+        let env_id: Arc<str> = Arc::from(engine_id.env_id.as_str());
+        let build_id: Arc<str> = Arc::from(engine_id.build_id.as_str());
+        let key = (env_id.clone(), build_id.clone());
 
         // Get buffers from pool
         let mut state_buf = self.buffer_pool.get_state_buffer();
         let mut obs_buf = self.buffer_pool.get_obs_buffer();
 
-        let mut cache = self.game_cache.lock().await;
-        let mut cache_len = cache.len() as f64;
-
-        let game = match cache.entry((env_id.clone(), build_id)) {
+        // Use DashMap's entry API for lock-free concurrent access
+        let mut game_entry = match self.game_cache.entry(key) {
             Entry::Occupied(entry) => {
                 counter!("engine_game_cache_hits_total", 1, "method" => "reset");
                 entry.into_mut()
             }
             Entry::Vacant(entry) => {
                 counter!("engine_game_cache_misses_total", 1, "method" => "reset");
-                match create_game(&env_id) {
-                    Some(game) => {
-                        cache_len += 1.0;
-                        entry.insert(game)
-                    }
-                    None => {
-                        counter!(
-                            "engine_rpc_failures_total",
-                            1,
-                            "method" => "reset",
-                            "error" => "unknown_env"
-                        );
-                        Self::observe_rpc_latency("reset", start);
-                        return Err(Status::not_found(format!("Unknown env_id: {}", env_id)));
-                    }
-                }
+                let Some(game) = create_game(env_id.as_ref()) else {
+                    counter!(
+                        "engine_rpc_failures_total",
+                        1,
+                        "method" => "reset",
+                        "error" => "unknown_env"
+                    );
+                    Self::observe_rpc_latency("reset", start);
+                    return Err(Status::not_found(format!("Unknown env_id: {}", env_id)));
+                };
+                entry.insert(game)
             }
         };
 
-        gauge!("engine_game_cache_entries", cache_len);
+        gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
 
         // Perform reset
-        if let Err(e) = game.reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf) {
+        if let Err(e) =
+            game_entry
+                .value_mut()
+                .reset(req.seed, &req.hint, &mut state_buf, &mut obs_buf)
+        {
+            tracing::error!(
+                error = %e,
+                env_id = %env_id,
+                seed = req.seed,
+                hint_size = req.hint.len(),
+                "Reset operation failed"
+            );
             counter!(
                 "engine_rpc_failures_total",
                 1,
@@ -219,17 +224,25 @@ impl Engine for EngineService {
                 "error" => "reset_failed"
             );
             Self::observe_rpc_latency("reset", start);
-            return Err(Status::internal(format!("Reset failed: {}", e)));
+            return Err(Status::internal(format!(
+                "Reset failed: {} (env_id={}, seed={}, hint_size={})",
+                e,
+                env_id,
+                req.seed,
+                req.hint.len()
+            )));
         }
 
-        drop(cache);
+        // Explicitly drop the entry to release the lock
+        drop(game_entry);
 
+        // Move buffers into response instead of cloning
         let response = ResetResponse {
-            state: state_buf.clone(),
-            obs: obs_buf.clone(),
+            state: std::mem::take(&mut state_buf),
+            obs: std::mem::take(&mut obs_buf),
         };
 
-        // Return buffers to pool
+        // Return now-empty buffers to pool (they'll be cleared automatically)
         self.buffer_pool.return_state_buffer(state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
 
@@ -277,15 +290,17 @@ impl Engine for EngineService {
             )));
         }
 
-        let key = (engine_id.env_id.clone(), engine_id.build_id.clone());
+        // Convert to Arc<str> for efficient cache key
+        let env_id: Arc<str> = Arc::from(engine_id.env_id.as_str());
+        let build_id: Arc<str> = Arc::from(engine_id.build_id.as_str());
+        let key = (env_id, build_id);
 
-        let mut cache = self.game_cache.lock().await;
-        let cache_size = cache.len() as f64;
-        let game = match cache.get_mut(&key) {
-            Some(game) => {
+        // Use DashMap's get_mut for fine-grained locking
+        let mut game_entry = match self.game_cache.get_mut(&key) {
+            Some(entry) => {
                 counter!("engine_game_cache_hits_total", 1, "method" => "step");
-                gauge!("engine_game_cache_entries", cache_size);
-                game
+                gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
+                entry
             }
             None => {
                 counter!("engine_game_cache_misses_total", 1, "method" => "step");
@@ -308,9 +323,16 @@ impl Engine for EngineService {
 
         // Perform step
         let (reward, done, info) =
-            match game.step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf) {
+            match game_entry.step(&req.state, &req.action, &mut new_state_buf, &mut obs_buf) {
                 Ok(result) => result,
                 Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        env_id = %env_id,
+                        state_size = req.state.len(),
+                        action_size = req.action.len(),
+                        "Step operation failed"
+                    );
                     counter!(
                         "engine_rpc_failures_total",
                         1,
@@ -318,21 +340,29 @@ impl Engine for EngineService {
                         "error" => "step_failed"
                     );
                     Self::observe_rpc_latency("step", start);
-                    return Err(Status::internal(format!("Step failed: {}", e)));
+                    return Err(Status::internal(format!(
+                        "Step failed: {} (env_id={}, state_size={}, action_size={})",
+                        e,
+                        env_id,
+                        req.state.len(),
+                        req.action.len()
+                    )));
                 }
             };
 
-        drop(cache);
+        // Explicitly drop the entry to release the fine-grained lock
+        drop(game_entry);
 
+        // Move buffers into response instead of cloning
         let response = StepResponse {
-            state: new_state_buf.clone(),
-            obs: obs_buf.clone(),
+            state: std::mem::take(&mut new_state_buf),
+            obs: std::mem::take(&mut obs_buf),
             reward,
             done,
             info,
         };
 
-        // Return buffers to pool
+        // Return now-empty buffers to pool
         self.buffer_pool.return_state_buffer(new_state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
 

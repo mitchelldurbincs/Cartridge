@@ -144,7 +144,14 @@ pub fn register_game(env_id: String, factory: GameFactory) {
 /// ```
 pub fn create_game(env_id: &str) -> Option<Box<dyn ErasedGame>> {
     let registry = REGISTRY.lock().unwrap();
-    registry.get(env_id).map(|factory| factory())
+    match registry.get(env_id) {
+        Some(factory) => Some(factory()),
+        None => {
+            warn!(env_id = %env_id, "Attempted to create unregistered game");
+            counter!("engine_registry_create_failures_total", 1, "env_id" => env_id.to_string());
+            None
+        }
+    }
 }
 
 /// Get list of all registered environment IDs

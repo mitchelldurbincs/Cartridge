@@ -1,0 +1,40 @@
+# Cargo build artifacts
+target/
+Cargo.lock
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Documentation
+*.md
+docs/
+README*
+LICENSE*
+CHANGELOG*
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Logs and temp files
+*.log
+tmp/
+temp/
+
+# OS-specific
+Thumbs.db
