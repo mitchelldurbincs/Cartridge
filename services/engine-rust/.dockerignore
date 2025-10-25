@@ -1,7 +1,6 @@
 # Cargo build artifacts
 target/
 **/target/
-Cargo.lock
 
 # IDE and editor files
 .vscode/
