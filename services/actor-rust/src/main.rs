@@ -46,10 +46,15 @@ async fn main() -> Result<()> {
     debug!(config = ?config, "Actor configuration loaded");
 
     // Log the max_episodes setting to help debug
+    let max_episode_description = if config.max_episodes < 0 {
+        "unlimited".to_string()
+    } else {
+        config.max_episodes.to_string()
+    };
     info!(
         max_episodes = config.max_episodes,
         "Actor will run {} episodes",
-        if config.max_episodes < 0 { "unlimited" } else { &config.max_episodes.to_string() }
+        max_episode_description
     );
 
     initialize_metrics(config.metrics_addr.as_deref())?;
