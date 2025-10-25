@@ -29,16 +29,28 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Print early diagnostic message to stderr before any initialization
+    eprintln!("Actor service starting...");
+
     // Parse configuration
     let config = Config::parse();
+    eprintln!("Configuration parsed successfully");
 
     // Validate configuration
     config.validate()?;
+    eprintln!("Configuration validated successfully");
 
     // Initialize tracing with the configured level or RUST_LOG override
     let selected_level = initialize_tracing(&config.log_level)?;
     info!(log_level = %selected_level, "Tracing initialized");
     debug!(config = ?config, "Actor configuration loaded");
+
+    // Log the max_episodes setting to help debug
+    info!(
+        max_episodes = config.max_episodes,
+        "Actor will run {} episodes",
+        if config.max_episodes < 0 { "unlimited" } else { &config.max_episodes.to_string() }
+    );
 
     initialize_metrics(config.metrics_addr.as_deref())?;
 
