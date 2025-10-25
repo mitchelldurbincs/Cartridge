@@ -161,6 +161,13 @@ impl Actor {
                                 total_reward as f64,
                                 "env_id" => env_label.clone()
                             );
+                            info!(
+                                episode = new_count,
+                                steps,
+                                total_reward,
+                                duration,
+                                "Episode completed"
+                            );
                             if new_count % 10 == 0 {
                                 info!("Completed {} episodes", new_count);
                             }
@@ -211,6 +218,12 @@ impl Actor {
             seed: SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64,
             hint: vec![],
         });
+
+        info!(
+            episode = episode_count + 1,
+            env_id = %self.config.env_id,
+            "Starting new episode"
+        );
 
         let reset_response = timeout(
             self.config.episode_timeout(),
@@ -348,6 +361,18 @@ impl Actor {
 
         match self.replay_client.clone().store_batch(request).await {
             Ok(_) => {
+                if count >= self.config.batch_size {
+                    info!(
+                        transitions = count,
+                        batch_size = self.config.batch_size,
+                        "Flushed full batch of transitions to replay"
+                    );
+                } else {
+                    info!(
+                        transitions = count,
+                        "Flushed partial batch of transitions to replay"
+                    );
+                }
                 counter!(
                     "actor_flush_results_total",
                     1,
@@ -381,6 +406,12 @@ impl Actor {
                     "actor_transitions_buffered",
                     buffer_len as f64,
                     "env_id" => self.config.env_id.clone()
+                );
+                error!(
+                    error = %e,
+                    transitions = count,
+                    buffer_len,
+                    "Failed to store batch in replay"
                 );
                 Err(anyhow!("Failed to store batch: {}", e))
             }
