@@ -18,8 +18,9 @@ from prometheus_client import (
 class MetricsRegistry:
     """Centralised Prometheus metrics for the learner process."""
 
-    def __init__(self, *, port: int = 9001, registry: CollectorRegistry | None = None) -> None:
+    def __init__(self, *, port: int = 9001, addr: str = "0.0.0.0", registry: CollectorRegistry | None = None) -> None:
         self._port = port
+        self._addr = addr
         self._registry = registry or CollectorRegistry(auto_describe=True)
         self.sample_attempts_total = Counter(
             "learner_sample_attempts_total",
@@ -86,7 +87,7 @@ class MetricsRegistry:
 
     async def _run_exporter(self) -> None:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, start_http_server, self._port, "", self._registry)
+        await loop.run_in_executor(None, start_http_server, self._port, self._addr, self._registry)
 
     @contextlib.asynccontextmanager
     async def track_sample_latency(self) -> AsyncIterator[None]:
