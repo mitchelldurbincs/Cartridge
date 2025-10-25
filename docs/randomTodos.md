@@ -25,4 +25,5 @@ learner-1  | {"step": 870, "policy_loss": 0.0703008696436882, "value_loss": 0.03
 learner-1  | {"run_id": "local-run", "step": 871, "status": "running", "loss": 0.024383505806326866, "samples_per_sec": 2548.92991368587, "checkpoint_version": 0, "heartbeat_count": 871, "status_code": 200, "event": "Heartbeat sent successfully", "level": "info", "timestamp": "2025-10-22T20:21:10.502629Z"}
 learner-1  | {"step": 880, "policy_loss": 0.10533687472343445, "value_loss": 0.0269900094717741, "entropy": 0.9035021066665649, "total_loss": 0.10979685932397842, "loop_duration_ms": 29.08, "samples_per_sec": 2200.76, "replay_queue_depth": 0, "replay_queue_capacity": 4, "steps_processed": 880, "event": "Training progress", "level": "info", "timestamp": "2025-10-22T20:21:10.819915Z"}
 learner-1  | {"run_id": "local-run", "step": 881, "status": "running", "loss": 0.09518349170684814, "samples_per_sec": 2233.2586460785865, "checkpoint_version": 0, "heartbeat_count": 881, "status_code": 200, "event": "Heartbeat sent successfully", "level": "info", "timestamp": "2025-10-22T20:21:10.850943Z"}
-- 
+
+- https://depot.dev/blog/rust-dockerfile-best-practices apply this to the rust dockerfiles
