@@ -154,6 +154,7 @@ services:
       ACTOR_REPLAY_ADDR: http://replay:8080
       ACTOR_ACTOR_ID: actor-rust-1
       ACTOR_ENV_ID: tictactoe
+      ACTOR_MAX_EPISODES: "-1"
       ACTOR_BATCH_SIZE: "64"
       ACTOR_FLUSH_INTERVAL: "5"
       ACTOR_LOG_LEVEL: info

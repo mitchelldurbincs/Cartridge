@@ -94,7 +94,11 @@ impl Actor {
     }
 
     pub async fn run(&self) -> Result<()> {
-        info!("Actor {} starting main loop", self.config.actor_id);
+        info!(
+            actor_id = %self.config.actor_id,
+            max_episodes = self.config.max_episodes,
+            "Actor starting main loop"
+        );
 
         // Setup flush timer for partial batches
         let mut flush_timer = interval(self.config.flush_interval());
@@ -104,6 +108,8 @@ impl Actor {
             0.0,
             "env_id" => self.config.env_id.clone()
         );
+
+        info!("Entering main event loop");
 
         loop {
             // Check shutdown signal
@@ -127,6 +133,11 @@ impl Actor {
                 _ = tokio::time::sleep(Duration::from_millis(1)) => {
                     // Check episode limit
                     let current_episode_count = self.episode_count.load(Ordering::Relaxed);
+                    debug!(
+                        current_episodes = current_episode_count,
+                        max_episodes = self.config.max_episodes,
+                        "Checking episode limit"
+                    );
                     if self.config.max_episodes > 0 && current_episode_count >= self.config.max_episodes as u32 {
                         info!("Reached maximum episodes ({}), stopping", self.config.max_episodes);
                         break;
