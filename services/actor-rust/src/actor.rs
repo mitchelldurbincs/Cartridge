@@ -217,7 +217,7 @@ impl Actor {
         info!("Shutdown signal set");
     }
 
-    async fn run_episode(&self) -> Result<(u32, f32)> {
+    pub async fn run_episode(&self) -> Result<(u32, f32)> {
         let episode_count = self.episode_count.load(Ordering::Relaxed);
 
         // Reset the game
