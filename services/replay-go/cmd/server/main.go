@@ -70,7 +70,7 @@ func main() {
 	}()
 
 	// Create metrics collector
-	collector := metrics.NewCollector(nil)
+	collector := metrics.NewCollector(nil, nil)
 
 	// Create gRPC service
 	replayService := service.NewReplayService(backend)

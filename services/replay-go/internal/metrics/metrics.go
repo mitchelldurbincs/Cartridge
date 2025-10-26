@@ -25,15 +25,21 @@ type Collector struct {
 
 // NewCollector constructs the replay metrics collector, registering the
 // counters and histograms with the supplied registerer. If reg is nil, the
-// Prometheus default registerer is used.
-func NewCollector(reg prometheus.Registerer) *Collector {
+// Prometheus default registerer is used. If gatherer is nil, the collector
+// attempts to extract a gatherer from reg by type assertion; if that fails,
+// it falls back to prometheus.DefaultGatherer. Passing an explicit gatherer
+// is necessary when using wrapped registerers (e.g., prometheus.WrapRegistererWith)
+// that do not implement prometheus.Gatherer.
+func NewCollector(reg prometheus.Registerer, gatherer prometheus.Gatherer) *Collector {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	gatherer := prometheus.DefaultGatherer
-	if g, ok := reg.(prometheus.Gatherer); ok {
-		gatherer = g
+	if gatherer == nil {
+		gatherer = prometheus.DefaultGatherer
+		if g, ok := reg.(prometheus.Gatherer); ok {
+			gatherer = g
+		}
 	}
 
 	storeRequests := prometheus.NewCounterVec(prometheus.CounterOpts{

@@ -12,7 +12,7 @@ import (
 
 func TestCollectorRecordsMetrics(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	collector := NewCollector(registry)
+	collector := NewCollector(registry, registry)
 
 	collector.RecordStore("StoreBatch", "success", 250*time.Millisecond, 7)
 	collector.RecordSample(true, "success", 150*time.Millisecond, 11)
@@ -108,7 +108,7 @@ func TestCollectorRecordsMetrics(t *testing.T) {
 
 func TestCollectorHandlerUsesCustomGatherer(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	collector := NewCollector(registry)
+	collector := NewCollector(registry, registry)
 
 	collector.RecordClear("success", 3)
 

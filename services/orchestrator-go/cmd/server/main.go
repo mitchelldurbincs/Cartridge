@@ -45,7 +45,7 @@ func main() {
 
 	store := storage.NewMemoryStore()
 	publisher := events.NoopPublisher{}
-	collector := metrics.NewCollector(nil)
+	collector := metrics.NewCollector(nil, nil)
 	orch := service.NewOrchestrator(store, publisher, logger)
 	orch.WithMetrics(collector)
 
