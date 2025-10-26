@@ -1,109 +1,104 @@
 package observability
 
 import (
-	"fmt"
-	"math"
 	"net/http"
-	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics exposes Prometheus-compatible counters and gauges.
+// Metrics exposes Prometheus-compatible counters, histograms, and gauges.
 type Metrics struct {
-	publishSuccess      atomic.Uint64
-	publishFailure      atomic.Uint64
-	publishLatencySum   atomic.Uint64 // stores math.Float64bits(sum)
-	publishLatencyCount atomic.Uint64
-	streamSubscribers   atomic.Int64
+	publishTotal     *prometheus.CounterVec
+	publishLatency   prometheus.Histogram
+	streamSubscribers prometheus.Gauge
+	gatherer         prometheus.Gatherer
 }
 
-// NewMetrics constructs a metrics collector instance.
+// NewMetrics constructs a metrics collector instance, registering all metrics
+// with the provided registerer. If reg is nil, the Prometheus default registerer
+// is used, which includes standard Go process metrics (goroutines, memory, GC).
 func NewMetrics() *Metrics {
-	return &Metrics{}
+	return NewMetricsWithRegisterer(nil)
+}
+
+// NewMetricsWithRegisterer allows explicit control over the registerer, useful for testing.
+func NewMetricsWithRegisterer(reg prometheus.Registerer) *Metrics {
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+
+	gatherer := prometheus.DefaultGatherer
+	if g, ok := reg.(prometheus.Gatherer); ok {
+		gatherer = g
+	}
+
+	publishTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "weights_publish_total",
+		Help: "Total number of publish attempts by outcome.",
+	}, []string{"status"})
+
+	publishLatency := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "weights_publish_latency_seconds",
+		Help: "Publish operation latency distribution.",
+		// Buckets optimized for typical weight publishing times (10ms to 30s)
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+	})
+
+	streamSubscribers := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "weights_stream_subscribers",
+		Help: "Current number of gRPC stream subscribers.",
+	})
+
+	reg.MustRegister(publishTotal, publishLatency, streamSubscribers)
+
+	return &Metrics{
+		publishTotal:      publishTotal,
+		publishLatency:    publishLatency,
+		streamSubscribers: streamSubscribers,
+		gatherer:          gatherer,
+	}
 }
 
 // PublishComplete records the outcome and duration of a publish attempt.
 func (m *Metrics) PublishComplete(duration time.Duration, err error) {
-	if err != nil {
-		m.publishFailure.Add(1)
-	} else {
-		m.publishSuccess.Add(1)
+	if m == nil {
+		return
 	}
-	m.addLatency(duration.Seconds())
-}
 
-func (m *Metrics) addLatency(value float64) {
-	for {
-		currentBits := m.publishLatencySum.Load()
-		current := math.Float64frombits(currentBits)
-		next := math.Float64bits(current + value)
-		if m.publishLatencySum.CompareAndSwap(currentBits, next) {
-			break
-		}
+	status := "success"
+	if err != nil {
+		status = "failure"
 	}
-	m.publishLatencyCount.Add(1)
+
+	m.publishTotal.WithLabelValues(status).Inc()
+	m.publishLatency.Observe(duration.Seconds())
 }
 
 // StreamSubscribed increments the active subscriber gauge.
 func (m *Metrics) StreamSubscribed() {
-	m.streamSubscribers.Add(1)
+	if m == nil {
+		return
+	}
+	m.streamSubscribers.Inc()
 }
 
-// StreamCancelled decrements the active subscriber gauge without allowing negatives.
+// StreamCancelled decrements the active subscriber gauge.
 func (m *Metrics) StreamCancelled() {
-	for {
-		current := m.streamSubscribers.Load()
-		if current <= 0 {
-			return
-		}
-		if m.streamSubscribers.CompareAndSwap(current, current-1) {
-			return
-		}
+	if m == nil {
+		return
 	}
+	m.streamSubscribers.Dec()
 }
 
-// Handler exposes metrics in Prometheus text exposition format.
+// Handler exposes the registered metrics using the official Prometheus HTTP handler.
+// This includes histogram buckets, proper escaping, and standard Go process metrics
+// (goroutines, memory, GC stats) automatically when using the default registerer.
 func (m *Metrics) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		success := m.publishSuccess.Load()
-		failure := m.publishFailure.Load()
-		sum := math.Float64frombits(m.publishLatencySum.Load())
-		count := m.publishLatencyCount.Load()
-		subscribers := m.streamSubscribers.Load()
-
-		fmt.Fprintf(w, "# HELP weights_publish_total Total number of publish attempts by outcome.\n")
-		fmt.Fprintf(w, "# TYPE weights_publish_total counter\n")
-		fmt.Fprintf(w, "weights_publish_total{status=\"success\"} %d\n", success)
-		fmt.Fprintf(w, "weights_publish_total{status=\"failure\"} %d\n", failure)
-
-		fmt.Fprintf(w, "# HELP weights_publish_latency_seconds Publish latency histogram buckets (sum/count only).\n")
-		fmt.Fprintf(w, "# TYPE weights_publish_latency_seconds histogram\n")
-		fmt.Fprintf(w, "weights_publish_latency_seconds_sum %f\n", sum)
-		fmt.Fprintf(w, "weights_publish_latency_seconds_count %d\n", count)
-
-		fmt.Fprintf(w, "# HELP weights_stream_subscribers Current number of gRPC stream subscribers.\n")
-		fmt.Fprintf(w, "# TYPE weights_stream_subscribers gauge\n")
-		fmt.Fprintf(w, "weights_stream_subscribers %d\n", subscribers)
-	})
-}
-
-// Snapshot returns the current counter values. Intended for testing.
-type MetricsSnapshot struct {
-	PublishSuccess      uint64
-	PublishFailure      uint64
-	PublishLatencySum   float64
-	PublishLatencyCount uint64
-	StreamSubscribers   int64
-}
-
-// Snapshot extracts metric values without mutating state.
-func (m *Metrics) Snapshot() MetricsSnapshot {
-	return MetricsSnapshot{
-		PublishSuccess:      m.publishSuccess.Load(),
-		PublishFailure:      m.publishFailure.Load(),
-		PublishLatencySum:   math.Float64frombits(m.publishLatencySum.Load()),
-		PublishLatencyCount: m.publishLatencyCount.Load(),
-		StreamSubscribers:   m.streamSubscribers.Load(),
+	gatherer := prometheus.DefaultGatherer
+	if m != nil && m.gatherer != nil {
+		gatherer = m.gatherer
 	}
+	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})
 }
