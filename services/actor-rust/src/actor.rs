@@ -450,7 +450,7 @@ mod tests {
     use std::collections::HashMap;
     use std::net::TcpListener;
     use std::sync::{
-        atomic::{AtomicBool, AtomicU32},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     };
     use tokio::sync::oneshot;
@@ -617,6 +617,7 @@ mod tests {
                 obs: vec![next_step, next_step + 1, next_step + 2],
                 reward: 1.0,
                 done: false,
+                info: 0,
             }))
         }
 
@@ -683,6 +684,7 @@ mod tests {
                 obs: vec![next_step, next_step + 1, next_step + 2],
                 reward: 1.0,
                 done: next_step >= 3,
+                info: 0,
             }))
         }
 
@@ -1443,7 +1445,7 @@ mod tests {
     // ====================
 
     #[tokio::test]
-    async fn run_episode_increments_episode_count() {
+    async fn actor_run_increments_episode_count() {
         let replay_service = MockReplay::default();
         let engine = MockEngine {
             max_steps: 2,
@@ -1461,13 +1463,8 @@ mod tests {
 
         assert_eq!(actor.episode_count.load(Ordering::Relaxed), 0);
 
-        actor.run_episode().await.expect("episode 1 should succeed");
-        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 1);
+        actor.run().await.expect("actor run should complete");
 
-        actor.run_episode().await.expect("episode 2 should succeed");
-        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 2);
-
-        actor.run_episode().await.expect("episode 3 should succeed");
         assert_eq!(actor.episode_count.load(Ordering::Relaxed), 3);
 
         engine_shutdown.send(()).unwrap();
