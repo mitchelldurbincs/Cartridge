@@ -13,5 +13,6 @@ pub use self::engine::v1::engine_client::{self, EngineClient};
 pub use self::engine::v1::engine_server::{self, Engine, EngineServer};
 pub use self::engine::v1::{
     BatchSimulateRequest, BoxSpec, Capabilities, Encoding, EngineId, MultiDiscrete, ResetRequest,
-    ResetResponse, SimResultChunk, StepRequest, StepResponse,
+    ResetResponse, SimResultChunk, SimStep, StepRequest, StepResponse, TrajectoryConfig,
+    TrajectoryResult,
 };
