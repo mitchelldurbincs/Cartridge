@@ -34,6 +34,25 @@ The system consists of these main services:
 - Weights (Go) → Actor (Rust): Model distribution via gRPC
 - All services → Observability: Metrics/logs/traces to Prometheus/Loki/Tempo
 
+## Prerequisites
+
+Before building and running services, ensure the following dependencies are installed:
+
+### System Dependencies
+- **Protocol Buffers Compiler (protoc) v25.1+** - Required for building Rust services that use gRPC
+  - Install: `apt-get install protobuf-compiler` (Debian/Ubuntu)
+  - Or download from: https://github.com/protocolbuffers/protobuf/releases (v25.1 recommended)
+  - Verify installation: `protoc --version`
+- **Rust toolchain** - Required for actor-rust and engine-rust services
+  - Install via rustup: https://rustup.rs/
+  - Includes: cargo, rustc, rustfmt, clippy
+- **Go 1.21+** - Required for orchestrator-go, replay-go, web-go, and weights-go services
+  - Install: https://go.dev/doc/install
+- **Python 3.10+** - Required for learner-py service
+  - Install with Poetry: https://python-poetry.org/docs/#installation
+- **Docker & Docker Compose** - Required for local development environment
+  - Install: https://docs.docker.com/get-docker/
+
 ## Development Commands
 
 ### Local Development
