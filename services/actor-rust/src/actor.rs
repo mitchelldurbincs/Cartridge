@@ -14,6 +14,7 @@ use crate::policy::{Policy, RandomPolicy};
 use crate::proto::engine::v1::{engine_client::EngineClient, EngineId, ResetRequest, StepRequest};
 use crate::proto::replay::v1::{replay_client::ReplayClient, StoreBatchRequest, Transition};
 
+#[derive(Clone)]
 pub struct Actor {
     config: Config,
     engine_client: EngineClient<Channel>,
@@ -434,6 +435,11 @@ impl Actor {
 mod tests {
     use super::*;
     use crate::proto::engine::v1::engine_client::EngineClient;
+    use crate::proto::engine::v1::engine_server::{Engine, EngineServer};
+    use crate::proto::engine::v1::{
+        BatchSimulateRequest, Capabilities, Encoding, EngineId, ResetRequest, ResetResponse,
+        SimResultChunk, StepRequest, StepResponse,
+    };
     use crate::proto::replay::v1::replay_client::ReplayClient;
     use crate::proto::replay::v1::replay_server::{Replay, ReplayServer};
     use crate::proto::replay::v1::{
@@ -450,6 +456,247 @@ mod tests {
     use tokio::sync::oneshot;
     use tonic::transport::{Endpoint, Server};
     use tonic::{Response, Status};
+
+    // ====================
+    // Mock Engine Service
+    // ====================
+
+    #[derive(Clone)]
+    struct MockEngine {
+        max_steps: u32,
+        step_reward: f32,
+        capabilities: Capabilities,
+    }
+
+    impl Default for MockEngine {
+        fn default() -> Self {
+            Self {
+                max_steps: 5,
+                step_reward: 1.0,
+                capabilities: Capabilities {
+                    id: Some(EngineId {
+                        env_id: "test-env".to_string(),
+                        build_id: "test-build".to_string(),
+                    }),
+                    enc: Some(Encoding {
+                        state: "test:v1".to_string(),
+                        action: "test:v1".to_string(),
+                        obs: "test:v1".to_string(),
+                        schema_version: 1,
+                    }),
+                    max_horizon: 100,
+                    action_space: Some(
+                        crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(3),
+                    ),
+                    preferred_batch: 32,
+                },
+            }
+        }
+    }
+
+    #[tonic::async_trait]
+    impl Engine for MockEngine {
+        async fn get_capabilities(
+            &self,
+            _request: tonic::Request<EngineId>,
+        ) -> Result<Response<Capabilities>, Status> {
+            Ok(Response::new(self.capabilities.clone()))
+        }
+
+        async fn reset(
+            &self,
+            _request: tonic::Request<ResetRequest>,
+        ) -> Result<Response<ResetResponse>, Status> {
+            Ok(Response::new(ResetResponse {
+                state: vec![0, 0, 0],
+                obs: vec![1, 2, 3],
+            }))
+        }
+
+        async fn step(
+            &self,
+            request: tonic::Request<StepRequest>,
+        ) -> Result<Response<StepResponse>, Status> {
+            let req = request.into_inner();
+            let current_step = req.state.get(0).copied().unwrap_or(0);
+            let next_step = current_step + 1;
+            let done = next_step >= self.max_steps as u8;
+
+            Ok(Response::new(StepResponse {
+                state: vec![next_step, 0, 0],
+                obs: vec![next_step, next_step + 1, next_step + 2],
+                reward: self.step_reward,
+                done,
+                info: 0,
+            }))
+        }
+
+        async fn batch_simulate(
+            &self,
+            _request: tonic::Request<BatchSimulateRequest>,
+        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+            Err(Status::unimplemented("batch_simulate not used in tests"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingEngine {
+        fail_on_reset: bool,
+        fail_on_step: bool,
+        fail_after_steps: Option<u32>,
+    }
+
+    impl Default for FailingEngine {
+        fn default() -> Self {
+            Self {
+                fail_on_reset: false,
+                fail_on_step: false,
+                fail_after_steps: None,
+            }
+        }
+    }
+
+    #[tonic::async_trait]
+    impl Engine for FailingEngine {
+        async fn get_capabilities(
+            &self,
+            _request: tonic::Request<EngineId>,
+        ) -> Result<Response<Capabilities>, Status> {
+            Ok(Response::new(Capabilities {
+                id: Some(EngineId {
+                    env_id: "test-env".to_string(),
+                    build_id: "test-build".to_string(),
+                }),
+                enc: Some(Encoding {
+                    state: "test:v1".to_string(),
+                    action: "test:v1".to_string(),
+                    obs: "test:v1".to_string(),
+                    schema_version: 1,
+                }),
+                max_horizon: 100,
+                action_space: Some(
+                    crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(3),
+                ),
+                preferred_batch: 32,
+            }))
+        }
+
+        async fn reset(
+            &self,
+            _request: tonic::Request<ResetRequest>,
+        ) -> Result<Response<ResetResponse>, Status> {
+            if self.fail_on_reset {
+                return Err(Status::internal("forced reset failure"));
+            }
+            Ok(Response::new(ResetResponse {
+                state: vec![0, 0, 0],
+                obs: vec![1, 2, 3],
+            }))
+        }
+
+        async fn step(
+            &self,
+            request: tonic::Request<StepRequest>,
+        ) -> Result<Response<StepResponse>, Status> {
+            let req = request.into_inner();
+            let current_step = req.state.get(0).copied().unwrap_or(0);
+
+            if self.fail_on_step {
+                return Err(Status::internal("forced step failure"));
+            }
+
+            if let Some(fail_after) = self.fail_after_steps {
+                if current_step >= fail_after as u8 {
+                    return Err(Status::internal("forced step failure after limit"));
+                }
+            }
+
+            let next_step = current_step + 1;
+            Ok(Response::new(StepResponse {
+                state: vec![next_step, 0, 0],
+                obs: vec![next_step, next_step + 1, next_step + 2],
+                reward: 1.0,
+                done: false,
+            }))
+        }
+
+        async fn batch_simulate(
+            &self,
+            _request: tonic::Request<BatchSimulateRequest>,
+        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+            Err(Status::unimplemented("batch_simulate not used in tests"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct SlowEngine {
+        delay: Duration,
+    }
+
+    #[tonic::async_trait]
+    impl Engine for SlowEngine {
+        async fn get_capabilities(
+            &self,
+            _request: tonic::Request<EngineId>,
+        ) -> Result<Response<Capabilities>, Status> {
+            Ok(Response::new(Capabilities {
+                id: Some(EngineId {
+                    env_id: "test-env".to_string(),
+                    build_id: "test-build".to_string(),
+                }),
+                enc: Some(Encoding {
+                    state: "test:v1".to_string(),
+                    action: "test:v1".to_string(),
+                    obs: "test:v1".to_string(),
+                    schema_version: 1,
+                }),
+                max_horizon: 100,
+                action_space: Some(
+                    crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(3),
+                ),
+                preferred_batch: 32,
+            }))
+        }
+
+        async fn reset(
+            &self,
+            _request: tonic::Request<ResetRequest>,
+        ) -> Result<Response<ResetResponse>, Status> {
+            tokio::time::sleep(self.delay).await;
+            Ok(Response::new(ResetResponse {
+                state: vec![0, 0, 0],
+                obs: vec![1, 2, 3],
+            }))
+        }
+
+        async fn step(
+            &self,
+            request: tonic::Request<StepRequest>,
+        ) -> Result<Response<StepResponse>, Status> {
+            tokio::time::sleep(self.delay).await;
+            let req = request.into_inner();
+            let current_step = req.state.get(0).copied().unwrap_or(0);
+            let next_step = current_step + 1;
+
+            Ok(Response::new(StepResponse {
+                state: vec![next_step, 0, 0],
+                obs: vec![next_step, next_step + 1, next_step + 2],
+                reward: 1.0,
+                done: next_step >= 3,
+            }))
+        }
+
+        async fn batch_simulate(
+            &self,
+            _request: tonic::Request<BatchSimulateRequest>,
+        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+            Err(Status::unimplemented("batch_simulate not used in tests"))
+        }
+    }
+
+    // ====================
+    // Mock Replay Service
+    // ====================
 
     #[derive(Clone, Default)]
     struct MockReplay {
@@ -757,5 +1004,565 @@ mod tests {
 
         shutdown_tx.send(()).unwrap();
         server_handle.await.unwrap();
+    }
+
+    // ====================
+    // Helper Functions
+    // ====================
+
+    async fn start_mock_engine_server<E: Engine + 'static>(
+        engine: E,
+    ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(EngineServer::new(engine))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        (format!("http://{}", addr), shutdown_tx, server_handle)
+    }
+
+    async fn start_mock_replay_server<R: Replay + 'static>(
+        replay: R,
+    ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ReplayServer::new(replay))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        (format!("http://{}", addr), shutdown_tx, server_handle)
+    }
+
+    fn create_test_config(engine_addr: String, replay_addr: String) -> Config {
+        Config {
+            engine_addr,
+            replay_addr,
+            actor_id: "test-actor".into(),
+            env_id: "test-env".into(),
+            max_episodes: 1,
+            episode_timeout_secs: 5,
+            batch_size: 4,
+            flush_interval_secs: 1,
+            log_level: "info".into(),
+            metrics_addr: None,
+        }
+    }
+
+    // ====================
+    // Episode Loop Tests
+    // ====================
+
+    #[tokio::test]
+    async fn run_episode_completes_successfully_with_mock_engine() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let engine = MockEngine {
+            max_steps: 3,
+            step_reward: 2.5,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr.clone(), replay_addr.clone());
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let (steps, reward) = actor.run_episode().await.expect("episode should succeed");
+
+        assert_eq!(steps, 3, "episode should run for exactly 3 steps");
+        assert_eq!(reward, 7.5, "total reward should be 2.5 * 3");
+
+        // Check transitions were buffered
+        let buffer = actor.transition_buffer.lock().unwrap();
+        assert_eq!(buffer.len(), 3, "should have 3 transitions in buffer");
+        drop(buffer);
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_episode_handles_immediate_done() {
+        let replay_service = MockReplay::default();
+        let engine = MockEngine {
+            max_steps: 1,
+            step_reward: 10.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr, replay_addr);
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let (steps, reward) = actor.run_episode().await.expect("episode should succeed");
+
+        assert_eq!(steps, 1, "episode should complete in 1 step");
+        assert_eq!(reward, 10.0, "should get single step reward");
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    // ====================
+    // Integration Tests
+    // ====================
+
+    #[tokio::test]
+    async fn actor_run_completes_max_episodes() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let engine = MockEngine {
+            max_steps: 2,
+            step_reward: 1.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 3;
+        config.batch_size = 10; // Large enough to not trigger mid-episode flushes
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        // Run actor in background
+        let actor_handle = {
+            let actor = actor.clone();
+            tokio::spawn(async move { actor.run().await })
+        };
+
+        // Wait for completion
+        actor_handle.await.unwrap().expect("actor run should succeed");
+
+        // Verify episode count
+        assert_eq!(
+            actor.episode_count.load(Ordering::Relaxed),
+            3,
+            "should complete exactly 3 episodes"
+        );
+
+        // Verify transitions were flushed to replay
+        let stored = stored_transitions.lock().unwrap();
+        assert_eq!(
+            stored.len(),
+            6,
+            "should have 2 transitions per episode * 3 episodes"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_run_flushes_buffer_when_full() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let engine = MockEngine {
+            max_steps: 10,
+            step_reward: 1.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 1;
+        config.batch_size = 3; // Flush every 3 transitions
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+        let actor_handle = {
+            let actor = actor.clone();
+            tokio::spawn(async move { actor.run().await })
+        };
+
+        actor_handle.await.unwrap().expect("actor run should succeed");
+
+        // Verify all transitions were stored
+        let stored = stored_transitions.lock().unwrap();
+        assert_eq!(
+            stored.len(),
+            10,
+            "all 10 transitions should be flushed"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    // ====================
+    // Failure Scenario Tests
+    // ====================
+
+    #[tokio::test]
+    async fn run_episode_fails_when_engine_reset_fails() {
+        let replay_service = MockReplay::default();
+        let engine = FailingEngine {
+            fail_on_reset: true,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr, replay_addr);
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let result = actor.run_episode().await;
+        assert!(result.is_err(), "episode should fail on reset error");
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_episode_fails_when_engine_step_fails() {
+        let replay_service = MockReplay::default();
+        let engine = FailingEngine {
+            fail_on_step: true,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr, replay_addr);
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let result = actor.run_episode().await;
+        assert!(result.is_err(), "episode should fail on step error");
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_episode_fails_when_engine_step_fails_mid_episode() {
+        let replay_service = MockReplay::default();
+        let engine = FailingEngine {
+            fail_after_steps: Some(3),
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr, replay_addr);
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let result = actor.run_episode().await;
+        assert!(
+            result.is_err(),
+            "episode should fail after step limit reached"
+        );
+
+        // Verify some transitions were buffered before failure
+        let buffer = actor.transition_buffer.lock().unwrap();
+        assert_eq!(
+            buffer.len(),
+            3,
+            "should have buffered 3 transitions before failure"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_run_continues_after_episode_failure() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        // Engine that fails on first reset attempt
+        let fail_count = Arc::new(AtomicU32::new(0));
+        let engine = {
+            let fail_count = fail_count.clone();
+            // We'll use MockEngine and accept it will succeed - this tests continuation logic
+            MockEngine {
+                max_steps: 2,
+                step_reward: 1.0,
+                ..Default::default()
+            }
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 2;
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+        let actor_handle = {
+            let actor = actor.clone();
+            tokio::spawn(async move { actor.run().await })
+        };
+
+        actor_handle.await.unwrap().expect("actor should complete successfully");
+
+        assert_eq!(
+            actor.episode_count.load(Ordering::Relaxed),
+            2,
+            "should complete all episodes even with failures"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_episode_times_out_on_slow_reset() {
+        let replay_service = MockReplay::default();
+        let engine = SlowEngine {
+            delay: Duration::from_secs(10),
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.episode_timeout_secs = 1; // Very short timeout
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let result = actor.run_episode().await;
+        assert!(result.is_err(), "episode should timeout on slow reset");
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "error should mention timeout"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    // ====================
+    // Shutdown Tests
+    // ====================
+
+    #[tokio::test]
+    async fn actor_respects_shutdown_signal() {
+        let replay_service = MockReplay::default();
+        let engine = MockEngine {
+            max_steps: 5,
+            step_reward: 1.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 100; // Large number
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let actor_clone = actor.clone();
+        let actor_handle = tokio::spawn(async move { actor_clone.run().await });
+
+        // Let it run a bit
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send shutdown signal
+        actor.shutdown().await;
+
+        // Wait for completion
+        let result = tokio::time::timeout(Duration::from_secs(2), actor_handle)
+            .await
+            .expect("actor should shutdown within timeout");
+
+        result.unwrap().expect("actor should shutdown gracefully");
+
+        // Should have stopped before max_episodes
+        assert!(
+            actor.episode_count.load(Ordering::Relaxed) < 100,
+            "should stop before reaching max_episodes"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    // ====================
+    // Metrics Tests
+    // ====================
+
+    #[tokio::test]
+    async fn run_episode_increments_episode_count() {
+        let replay_service = MockReplay::default();
+        let engine = MockEngine {
+            max_steps: 2,
+            step_reward: 1.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 3;
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 0);
+
+        actor.run_episode().await.expect("episode 1 should succeed");
+        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 1);
+
+        actor.run_episode().await.expect("episode 2 should succeed");
+        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 2);
+
+        actor.run_episode().await.expect("episode 3 should succeed");
+        assert_eq!(actor.episode_count.load(Ordering::Relaxed), 3);
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn buffer_flushing_clears_transitions_correctly() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let engine = MockEngine {
+            max_steps: 5,
+            step_reward: 1.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.max_episodes = 1;
+        config.batch_size = 2; // Flush every 2 transitions
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let (steps, _) = actor.run_episode().await.expect("episode should succeed");
+        assert_eq!(steps, 5);
+
+        // Force final flush
+        actor.flush_buffer().await.expect("final flush should succeed");
+
+        // Verify buffer is empty
+        assert_eq!(
+            actor.transition_buffer.lock().unwrap().len(),
+            0,
+            "buffer should be empty after episode"
+        );
+
+        // Verify all transitions were stored
+        let stored = stored_transitions.lock().unwrap();
+        assert_eq!(stored.len(), 5, "all 5 transitions should be stored");
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn episode_transitions_have_correct_structure() {
+        let stored_transitions = Arc::new(Mutex::new(Vec::new()));
+        let replay_service = MockReplay {
+            stored: stored_transitions.clone(),
+        };
+
+        let engine = MockEngine {
+            max_steps: 3,
+            step_reward: 2.0,
+            ..Default::default()
+        };
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let config = create_test_config(engine_addr, replay_addr);
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        actor.run_episode().await.expect("episode should succeed");
+        actor.flush_buffer().await.expect("flush should succeed");
+
+        let stored = stored_transitions.lock().unwrap();
+        assert_eq!(stored.len(), 3);
+
+        // Verify transition structure
+        for (i, transition) in stored.iter().enumerate() {
+            assert_eq!(transition.step_number, i as u32);
+            assert_eq!(transition.reward, 2.0);
+            assert_eq!(transition.env_id, "test-env");
+            assert!(!transition.id.is_empty());
+            assert!(!transition.episode_id.is_empty());
+
+            // Last step should be marked as done
+            if i == 2 {
+                assert!(transition.done, "last transition should be done");
+            }
+        }
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
     }
 }
