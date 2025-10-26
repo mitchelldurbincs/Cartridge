@@ -3,6 +3,9 @@
 ## Project Structure & Module Organization
 Cartridge is organized by service under `services/`, with language-specific runtimes: `orchestrator-go`, `weights-go`, `replay-go`, and `web-go` (Go), `engine-rust` and `actor-rust` (Rust), and `learner-py` (Python). Each service keeps its source under `cmd/` or `src/` and colocates tests. Shared protobuf contracts live in `proto/engine`, `proto/replay`, and `proto/weights`; regenerate stubs before shipping protocol changes. Runtime configs sit in `configs/`, deployment manifests in `deployments/`, and observability dashboards in `observability/`. High-level component designs are captured in `docs/Individual Component Design`.
 
+## Prerequisites
+Install the following before building services: **Protocol Buffers Compiler (protoc) v25.1+** (required for Rust gRPC services; install via `apt-get install protobuf-compiler` or download from https://github.com/protocolbuffers/protobuf/releases), **Rust toolchain** via rustup, **Go 1.21+**, **Python 3.10+** with Poetry, and **Docker/Docker Compose** for local deployments. Verify protoc with `protoc --version`.
+
 ## Build, Test, and Development Commands
 - Go services: `cd services/orchestrator-go && go run ./cmd/server` to launch, `go test ./...` for unit suites; apply the same pattern for `services/weights-go` and `services/replay-go`.
 - Rust services: `cd services/engine-rust && cargo check && cargo test`; use `cargo run -p engine-server` for the engine binary and mirror that workflow for `services/actor-rust`.
