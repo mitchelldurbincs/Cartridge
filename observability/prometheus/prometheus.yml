@@ -4,7 +4,7 @@
 global:
   scrape_interval: 15s       # Scrape targets every 15 seconds
   evaluation_interval: 15s   # Evaluate rules every 15 seconds
-  scrape_timeout: 10s        # Timeout after 10 seconds
+  scrape_timeout: 15s        # Timeout after 15 seconds (matches scrape_interval)
 
   external_labels:
     cluster: 'local'
@@ -46,6 +46,7 @@ scrape_configs:
           service: 'learner'
           language: 'python'
     scrape_interval: 10s  # More frequent scraping for training metrics
+    scrape_timeout: 10s   # Ensure timeout does not exceed learner scrape interval
 
   # Orchestrator Service (Go)
   # Metrics: HTTP requests, run state transitions, health events
