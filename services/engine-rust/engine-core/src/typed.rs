@@ -428,7 +428,9 @@ mod tests {
             ActionSpace::MultiDiscrete(ref nvec) => {
                 assert_eq!(nvec, &vec![3, 4, 5]);
             }
-            _ => panic!("Expected MultiDiscrete action space"),
+            ref other => {
+                panic!("Expected MultiDiscrete action space, but got {:?}", other);
+            }
         }
     }
 
@@ -575,7 +577,9 @@ mod tests {
                 assert_eq!(high, &vec![1.0, 2.0]);
                 assert_eq!(shape, &vec![2]);
             }
-            _ => panic!("Expected Continuous action space"),
+            ref other => {
+                panic!("Expected Continuous action space, but got {:?}", other);
+            }
         }
     }
 
