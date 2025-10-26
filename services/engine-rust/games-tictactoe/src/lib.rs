@@ -573,7 +573,9 @@ mod tests {
 
         match caps.action_space {
             ActionSpace::Discrete(n) => assert_eq!(n, 9),
-            _ => panic!("Expected discrete action space"),
+            ref other => {
+                panic!("Expected discrete action space, but got {:?}", other);
+            }
         }
     }
 
