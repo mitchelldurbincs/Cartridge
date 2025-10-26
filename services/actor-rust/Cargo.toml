@@ -8,6 +8,9 @@ name = "actor"
 path = "src/main.rs"
 
 [dependencies]
+# Shared libraries
+cartridge-observability = { path = "../engine-rust/cartridge-observability" }
+
 # Core dependencies
 tokio = { version = "1.0", features = ["full"] }
 tonic = "0.10"
