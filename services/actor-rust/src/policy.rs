@@ -209,4 +209,241 @@ mod tests {
             assert!(action2 >= 0.0 && action2 < 2.0);
         }
     }
+
+    // Edge case tests
+
+    #[test]
+    fn test_discrete_action_space_with_zero_n() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(0),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with n=0");
+        assert!(result.unwrap_err().to_string().contains("must have n > 0"));
+    }
+
+    #[test]
+    fn test_discrete_action_space_with_large_n() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(256),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with n > 255");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("n > 255 not supported"));
+    }
+
+    #[test]
+    fn test_discrete_action_space_boundary() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(255),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        // Should work with n=255 (max single byte value)
+        for _ in 0..10 {
+            let result = policy.select_action(&[]);
+            assert!(result.is_ok(), "should succeed with n=255");
+            let action = result.unwrap()[0];
+            assert!(action < 255, "action should be less than 255");
+        }
+    }
+
+    #[test]
+    fn test_multi_discrete_with_zero_dimension() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Multi(MultiDiscrete {
+                nvec: vec![2, 0, 3],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with zero dimension");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have all n > 0"));
+    }
+
+    #[test]
+    fn test_multi_discrete_with_single_dimension() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Multi(MultiDiscrete {
+                nvec: vec![5],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        for _ in 0..10 {
+            let action_bytes = policy.select_action(&[]).unwrap();
+            assert_eq!(action_bytes.len(), 4); // 1 * u32 = 4 bytes
+
+            let action = u32::from_le_bytes(action_bytes[0..4].try_into().unwrap());
+            assert!(action < 5);
+        }
+    }
+
+    #[test]
+    fn test_continuous_with_mismatched_bounds() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Continuous(BoxSpec {
+                low: vec![-1.0, 0.0],
+                high: vec![1.0], // Mismatched length
+                shape: vec![2],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with mismatched bounds");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have same length"));
+    }
+
+    #[test]
+    fn test_continuous_with_invalid_bounds() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Continuous(BoxSpec {
+                low: vec![1.0, 2.0],
+                high: vec![1.0, 1.0], // low >= high
+                shape: vec![2],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with low >= high");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be less than high"));
+    }
+
+    #[test]
+    fn test_continuous_with_equal_bounds() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Continuous(BoxSpec {
+                low: vec![5.0],
+                high: vec![5.0], // Equal bounds
+                shape: vec![1],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        let result = policy.select_action(&[]);
+        assert!(result.is_err(), "should fail with equal bounds");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be less than high"));
+    }
+
+    #[test]
+    fn test_continuous_with_single_dimension() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Continuous(BoxSpec {
+                low: vec![0.0],
+                high: vec![1.0],
+                shape: vec![1],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        for _ in 0..10 {
+            let action_bytes = policy.select_action(&[]).unwrap();
+            assert_eq!(action_bytes.len(), 4); // 1 * f32 = 4 bytes
+
+            let action = f32::from_le_bytes(action_bytes[0..4].try_into().unwrap());
+            assert!(action >= 0.0 && action < 1.0);
+        }
+    }
+
+    #[test]
+    fn test_continuous_with_negative_range() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::Continuous(BoxSpec {
+                low: vec![-10.0, -5.0],
+                high: vec![-1.0, -2.0],
+                shape: vec![2],
+            }),
+        );
+        let mut policy = RandomPolicy::with_seed(&caps, 42).unwrap();
+
+        for _ in 0..10 {
+            let action_bytes = policy.select_action(&[]).unwrap();
+            assert_eq!(action_bytes.len(), 8); // 2 * f32 = 8 bytes
+
+            let action1 = f32::from_le_bytes(action_bytes[0..4].try_into().unwrap());
+            let action2 = f32::from_le_bytes(action_bytes[4..8].try_into().unwrap());
+
+            assert!(action1 >= -10.0 && action1 < -1.0);
+            assert!(action2 >= -5.0 && action2 < -2.0);
+        }
+    }
+
+    #[test]
+    fn test_no_action_space_specified() {
+        let mut caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(4),
+        );
+        caps.action_space = None;
+
+        let result = RandomPolicy::new(&caps);
+        assert!(result.is_err(), "should fail with no action space");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No action space specified"));
+    }
+
+    #[test]
+    fn test_policy_is_deterministic_with_seed() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(10),
+        );
+
+        let mut policy1 = RandomPolicy::with_seed(&caps, 12345).unwrap();
+        let mut policy2 = RandomPolicy::with_seed(&caps, 12345).unwrap();
+
+        // Same seed should produce same sequence
+        for _ in 0..10 {
+            let action1 = policy1.select_action(&[]).unwrap();
+            let action2 = policy2.select_action(&[]).unwrap();
+            assert_eq!(action1, action2, "same seed should produce same actions");
+        }
+    }
+
+    #[test]
+    fn test_policy_is_different_with_different_seed() {
+        let caps = create_test_capabilities(
+            crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(10),
+        );
+
+        let mut policy1 = RandomPolicy::with_seed(&caps, 111).unwrap();
+        let mut policy2 = RandomPolicy::with_seed(&caps, 222).unwrap();
+
+        // Different seeds should (very likely) produce different sequences
+        let mut different_count = 0;
+        for _ in 0..10 {
+            let action1 = policy1.select_action(&[]).unwrap();
+            let action2 = policy2.select_action(&[]).unwrap();
+            if action1 != action2 {
+                different_count += 1;
+            }
+        }
+
+        assert!(
+            different_count > 5,
+            "different seeds should produce mostly different actions"
+        );
+    }
 }
