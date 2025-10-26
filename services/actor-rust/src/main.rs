@@ -131,13 +131,42 @@ fn initialize_metrics(addr: Option<&str>) -> Result<()> {
             let socket_addr: SocketAddr = addr
                 .parse()
                 .map_err(|e| anyhow::anyhow!("invalid ACTOR_METRICS_ADDR '{}': {}", addr, e))?;
+
+            info!(%socket_addr, "Starting Prometheus metrics exporter");
+
+            // Install the Prometheus recorder
             PrometheusBuilder::new()
                 .with_http_listener(socket_addr)
                 .install_recorder()
-                .map(|_| {
-                    info!(%socket_addr, "Prometheus metrics exporter initialized");
-                })
-                .map_err(|e| anyhow::anyhow!("failed to install Prometheus recorder: {}", e))?
+                .map_err(|e| anyhow::anyhow!("failed to install Prometheus recorder: {}", e))?;
+
+            info!(%socket_addr, "Prometheus metrics recorder installed");
+
+            // Give the HTTP server a moment to start
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            // Verify the HTTP server is actually listening by making a test request
+            match std::process::Command::new("curl")
+                .args(["-s", "-f", &format!("http://{}:{}/metrics", socket_addr.ip(), socket_addr.port())])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    info!(%socket_addr, "Prometheus metrics endpoint verified and accessible");
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(anyhow::anyhow!(
+                        "Prometheus metrics endpoint not accessible at {}: curl failed with: {}",
+                        socket_addr, stderr
+                    ));
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to verify Prometheus metrics endpoint at {}: {}",
+                        socket_addr, e
+                    ));
+                }
+            }
         }
         None => {
             debug!("Prometheus metrics exporter disabled");
