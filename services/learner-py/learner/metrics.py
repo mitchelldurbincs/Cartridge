@@ -36,6 +36,7 @@ class MetricsRegistry:
         self.sample_latency_seconds = Histogram(
             "learner_sample_latency_seconds",
             "Latency of replay sampling requests",
+            buckets=[.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60],
             registry=self._registry,
         )
         self.sgd_steps_total = Counter(
@@ -71,6 +72,7 @@ class MetricsRegistry:
         self.checkpoint_duration = Histogram(
             "learner_checkpoint_duration_seconds",
             "Duration of checkpoint operations",
+            buckets=[.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60],
             registry=self._registry,
         )
         self.weights_published_total = Counter(
