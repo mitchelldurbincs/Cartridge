@@ -925,7 +925,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(weights_publish_total{status=\"success\"}[1m])",
+          "expr": "rate(weights_publish_total{result=\"success\"}[1m])",
           "legendFormat": "Success",
           "refId": "A"
         },
@@ -934,7 +934,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(weights_publish_total{status=\"failure\"}[1m])",
+          "expr": "rate(weights_publish_total{result=\"failure\"}[1m])",
           "legendFormat": "Failure",
           "refId": "B"
         }

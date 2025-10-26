@@ -197,7 +197,7 @@ groups:
       # Alert on high weights publish failure rate
       - alert: HighWeightsPublishFailureRate
         expr: |
-          rate(weights_publish_total{status="failure"}[5m]) /
+          rate(weights_publish_total{result="failure"}[5m]) /
           rate(weights_publish_total[5m]) > 0.1
         for: 5m
         labels:

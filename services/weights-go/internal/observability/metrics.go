@@ -74,8 +74,8 @@ func (m *Metrics) Handler() http.Handler {
 
 		fmt.Fprintf(w, "# HELP weights_publish_total Total number of publish attempts by outcome.\n")
 		fmt.Fprintf(w, "# TYPE weights_publish_total counter\n")
-		fmt.Fprintf(w, "weights_publish_total{status=\"success\"} %d\n", success)
-		fmt.Fprintf(w, "weights_publish_total{status=\"failure\"} %d\n", failure)
+		fmt.Fprintf(w, "weights_publish_total{result=\"success\"} %d\n", success)
+		fmt.Fprintf(w, "weights_publish_total{result=\"failure\"} %d\n", failure)
 
 		fmt.Fprintf(w, "# HELP weights_publish_latency_seconds Publish latency histogram buckets (sum/count only).\n")
 		fmt.Fprintf(w, "# TYPE weights_publish_latency_seconds histogram\n")

@@ -91,6 +91,69 @@ server (port `9090` by default).
 | `replay_clear_transitions_total` | Counter | `result` (`success`, `error`) | Number of transitions removed during Clear RPCs. | `RecordClear` in `internal/metrics/metrics.go`. |
 
 
+## Weights Service (`services/weights-go`)
+
+The weights service publishes trained model weights to actors and tracks publishing
+outcomes and subscriber metrics.
+
+| Metric | Type | Labels | Description | Emitted from |
+| --- | --- | --- | --- | --- |
+| `weights_publish_total` | Counter | `result` (`success`, `failure`) | Total number of publish attempts by outcome. | `PublishComplete` in `internal/observability/metrics.go`. |
+| `weights_publish_latency_seconds` | Histogram | _none_ | Publish latency distribution (sum/count only). | `PublishComplete` in `internal/observability/metrics.go`. |
+| `weights_stream_subscribers` | Gauge | _none_ | Current number of gRPC stream subscribers. | `StreamSubscribed`/`StreamCancelled` in `internal/observability/metrics.go`. |
+
+
+## Label Naming Conventions
+
+To maintain consistency across services and simplify metric analysis, follow these
+label naming standards when adding or modifying metrics:
+
+### Standard Label Names
+
+- **`result`** - For success/failure outcomes of operations
+  - Values: `success`, `error`, `failure`, or specific error types (e.g., `invalid_argument`)
+  - Use this instead of `status`, `outcome`, or other synonyms
+  - Examples: `learner_sample_results_total{result="success"}`, `weights_publish_total{result="failure"}`
+
+- **`env_id`** - For game environment identifiers
+  - Values: environment ID strings (e.g., `tictactoe_v1`)
+  - Used to correlate metrics across actor and engine services
+  - Examples: `actor_episode_results_total{env_id="tictactoe_v1"}`, `engine_registry_registrations_total{env_id="tictactoe_v1"}`
+
+- **`method`** - For RPC method names or request types
+  - Values: method/operation names (e.g., `reset`, `step`, `single`, `batch`)
+  - Examples: `engine_rpc_requests_total{method="step"}`, `replay_store_requests_total{method="batch"}`
+
+- **`prioritized`** - For boolean prioritized replay sampling flag
+  - Values: `true`, `false` (string representation of boolean)
+  - Examples: `replay_sample_requests_total{prioritized="true"}`
+
+### Domain-Specific Labels
+
+Some labels are specific to particular service domains and should remain as-is:
+
+- **`from`, `to`** - For state machine transitions (orchestrator)
+  - Example: `orchestrator_run_state_transitions_total{from="pending",to="running"}`
+
+- **`buffer`** - For buffer pool types (engine)
+  - Values: `state`, `obs`, `action`
+  - Example: `engine_buffer_pool_borrows_total{buffer="state"}`
+
+### Boolean Label Values
+
+When representing boolean states in labels:
+- Use string values `"true"` and `"false"` (lowercase)
+- Do NOT use `"1"` and `"0"` or `"yes"` and `"no"`
+- Example: `prioritized="true"` not `prioritized="1"`
+
+### Best Practices
+
+1. **Consistency**: Always use the standard label name for the same concept across services
+2. **Cardinality**: Keep label value sets bounded to avoid metric explosion
+3. **Documentation**: Update this file when adding new labels or label values
+4. **Naming**: Use snake_case for label names (e.g., `env_id`, not `envId` or `env-id`)
+
+
 ## Adding New Metrics
 
 When adding instrumentation to a service, prefer updating the existing collector class
