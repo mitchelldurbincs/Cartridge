@@ -46,6 +46,7 @@ scrape_configs:
           service: 'learner'
           language: 'python'
     scrape_interval: 10s  # More frequent scraping for training metrics
+    scrape_timeout: 10s   # Ensure timeout does not exceed learner scrape interval
 
   # Orchestrator Service (Go)
   # Metrics: HTTP requests, run state transitions, health events
