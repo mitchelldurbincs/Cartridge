@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 # Observability
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 metrics-exporter-prometheus = { workspace = true }
 
 # Error handling

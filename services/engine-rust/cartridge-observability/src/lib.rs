@@ -9,18 +9,19 @@ use std::env;
 use std::net::SocketAddr;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, info};
+use tracing_subscriber::EnvFilter;
 
-/// Initialize tracing with configurable log level.
+/// Initialize tracing with configurable log filter.
 ///
 /// This function sets up the tracing subscriber with the following priority:
-/// 1. RUST_LOG environment variable (if valid)
-/// 2. The provided fallback_log_level parameter
+/// 1. `RUST_LOG` environment variable (if valid)
+/// 2. The provided `fallback_log_level` parameter
 ///
 /// # Arguments
-/// * `fallback_log_level` - The log level to use if RUST_LOG is not set or invalid
+/// * `fallback_log_level` - The log level or filter directive to use if RUST_LOG is not set or invalid
 ///
 /// # Returns
-/// * `Ok(LevelFilter)` - The selected log level that was applied
+/// * `Ok(LevelFilter)` - The most permissive level allowed by the active filter
 /// * `Err` - If the fallback_log_level is invalid or tracing initialization fails
 ///
 /// # Example
@@ -31,32 +32,38 @@ use tracing::{debug, info};
 /// println!("Tracing initialized at level: {}", level);
 /// ```
 pub fn init_tracing(fallback_log_level: &str) -> Result<LevelFilter> {
-    let fallback_level = fallback_log_level
-        .parse::<LevelFilter>()
-        .map_err(|e| anyhow!("invalid log level '{}': {}", fallback_log_level, e))?;
+    let fallback_filter = EnvFilter::try_new(fallback_log_level).map_err(|e| {
+        anyhow!(
+            "invalid log level or filter '{}': {}",
+            fallback_log_level,
+            e
+        )
+    })?;
 
-    let selected_level = match env::var("RUST_LOG") {
-        Ok(value) => match value.parse::<LevelFilter>() {
-            Ok(level) => {
+    let mut filter = fallback_filter;
+    let mut selected_level = filter.max_level_hint().unwrap_or(LevelFilter::TRACE);
+
+    if let Ok(value) = env::var("RUST_LOG") {
+        match EnvFilter::try_new(value.clone()) {
+            Ok(env_filter) => {
+                selected_level = env_filter.max_level_hint().unwrap_or(LevelFilter::TRACE);
                 info!(
                     rust_log = %value,
-                    "Using RUST_LOG environment variable for log level"
+                    "Using RUST_LOG environment variable for log filter"
                 );
-                level
+                filter = env_filter;
             }
             Err(e) => {
                 eprintln!(
-                    "Failed to parse RUST_LOG '{}': {}. Falling back to configured log level.",
+                    "Failed to parse RUST_LOG '{}': {}. Falling back to configured log filter.",
                     value, e
                 );
-                fallback_level
             }
-        },
-        Err(_) => fallback_level,
-    };
+        }
+    }
 
     tracing_subscriber::fmt()
-        .with_max_level(selected_level)
+        .with_env_filter(filter)
         .try_init()
         .map_err(|e| anyhow!("failed to initialize tracing subscriber: {}", e))?;
 
