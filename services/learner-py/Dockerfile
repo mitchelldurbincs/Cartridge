@@ -45,7 +45,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Install only runtime dependencies (no build tools)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/services/learner-py
