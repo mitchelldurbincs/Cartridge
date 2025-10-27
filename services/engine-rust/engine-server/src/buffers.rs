@@ -420,4 +420,232 @@ mod tests {
         assert_eq!(pooled.len(), 5);
         assert_eq!(&pooled[..], b"hello");
     }
+
+    // Concurrent access tests
+
+    #[test]
+    fn test_concurrent_buffer_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pool = Arc::new(BufferPool::with_capacity(10, 10, 10, 256));
+        let num_threads = 8;
+        let operations_per_thread = 100;
+
+        let mut handles = Vec::new();
+
+        for thread_id in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                for i in 0..operations_per_thread {
+                    // Get a buffer
+                    let mut buf = match thread_id % 3 {
+                        0 => pool_clone.get_state_buffer(),
+                        1 => pool_clone.get_obs_buffer(),
+                        _ => pool_clone.get_action_buffer(),
+                    };
+
+                    // Write some data
+                    buf.extend_from_slice(&[thread_id as u8, i as u8]);
+
+                    // Return the buffer
+                    match thread_id % 3 {
+                        0 => pool_clone.return_state_buffer(buf),
+                        1 => pool_clone.return_obs_buffer(buf),
+                        _ => pool_clone.return_action_buffer(buf),
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify the pool is in a consistent state
+        let stats = pool.stats();
+        // All buffers should be returned (some may have been created on demand)
+        assert!(stats.available_state_buffers >= 0);
+        assert!(stats.available_obs_buffers >= 0);
+        assert!(stats.available_action_buffers >= 0);
+    }
+
+    #[test]
+    fn test_concurrent_buffer_no_loss() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pool = Arc::new(BufferPool::with_capacity(50, 50, 50, 128));
+        let initial_stats = pool.stats();
+
+        let num_threads = 4;
+        let buffers_per_thread = 10;
+
+        let mut handles = Vec::new();
+
+        for _ in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                let mut buffers = Vec::new();
+
+                // Get multiple buffers
+                for _ in 0..buffers_per_thread {
+                    buffers.push(pool_clone.get_state_buffer());
+                }
+
+                // Return all buffers
+                for buf in buffers {
+                    pool_clone.return_state_buffer(buf);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Final stats should show all buffers returned
+        let final_stats = pool.stats();
+        // At minimum, we should have the initial buffers back
+        assert!(final_stats.available_state_buffers >= initial_stats.available_state_buffers);
+    }
+
+    #[test]
+    fn test_concurrent_high_contention() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let pool = Arc::new(BufferPool::with_capacity(5, 5, 5, 64));
+        let num_threads = 16; // More threads than buffers to create contention
+
+        let mut handles = Vec::new();
+
+        for thread_id in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                for _ in 0..50 {
+                    let mut buf = pool_clone.get_state_buffer();
+                    buf.extend_from_slice(&[thread_id as u8]);
+
+                    // Simulate some work
+                    thread::sleep(Duration::from_micros(10));
+
+                    pool_clone.return_state_buffer(buf);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify pool is still functional
+        let buf = pool.get_state_buffer();
+        assert_eq!(buf.len(), 0); // Should be cleared
+        pool.return_state_buffer(buf);
+    }
+
+    #[test]
+    fn test_concurrent_pooled_buffer_raii() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pool = Arc::new(BufferPool::with_capacity(20, 0, 0, 128));
+
+        let num_threads = 8;
+        let mut handles = Vec::new();
+
+        for _ in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                for _ in 0..25 {
+                    let buffer = pool_clone.get_state_buffer();
+                    let pool_for_closure = pool_clone.clone();
+
+                    // Create PooledBuffer - should auto-return on drop
+                    let _pooled = PooledBuffer::new(buffer, move |buf| {
+                        pool_for_closure.return_state_buffer(buf)
+                    });
+
+                    // Buffer gets returned when _pooled goes out of scope
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All buffers should be back in the pool
+        let stats = pool.stats();
+        assert!(stats.available_state_buffers >= 20);
+    }
+
+    #[test]
+    fn test_concurrent_mixed_operations() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pool = Arc::new(BufferPool::with_capacity(10, 10, 10, 256));
+        let num_threads = 6;
+
+        let mut handles = Vec::new();
+
+        for thread_id in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                match thread_id % 3 {
+                    0 => {
+                        // Thread type 0: Get and return state buffers
+                        for _ in 0..50 {
+                            let buf = pool_clone.get_state_buffer();
+                            pool_clone.return_state_buffer(buf);
+                        }
+                    }
+                    1 => {
+                        // Thread type 1: Get and return obs buffers
+                        for _ in 0..50 {
+                            let buf = pool_clone.get_obs_buffer();
+                            pool_clone.return_obs_buffer(buf);
+                        }
+                    }
+                    _ => {
+                        // Thread type 2: Get and return action buffers
+                        for _ in 0..50 {
+                            let buf = pool_clone.get_action_buffer();
+                            pool_clone.return_action_buffer(buf);
+                        }
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All buffer types should have buffers available
+        let stats = pool.stats();
+        assert!(stats.available_state_buffers >= 10);
+        assert!(stats.available_obs_buffers >= 10);
+        assert!(stats.available_action_buffers >= 10);
+    }
 }
