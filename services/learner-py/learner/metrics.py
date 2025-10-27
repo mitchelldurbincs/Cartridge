@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import structlog
 from typing import AsyncIterator
 
 from prometheus_client import (
@@ -13,6 +14,8 @@ from prometheus_client import (
     Histogram,
     start_http_server,
 )
+
+_LOGGER = structlog.get_logger(__name__)
 
 
 class MetricsRegistry:
@@ -88,8 +91,39 @@ class MetricsRegistry:
             self._server_task = loop.create_task(self._run_exporter())
 
     async def _run_exporter(self) -> None:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, start_http_server, self._port, self._addr, self._registry)
+        try:
+            _LOGGER.info("Starting Prometheus metrics HTTP server", port=self._port, addr=self._addr)
+            loop = asyncio.get_running_loop()
+            # start_http_server is blocking, so run it in a thread executor
+            # We don't await completion because the server runs indefinitely
+            await loop.run_in_executor(None, self._start_server_blocking)
+        except Exception as exc:
+            _LOGGER.error(
+                "Failed to start Prometheus metrics HTTP server",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                port=self._port,
+                addr=self._addr
+            )
+            raise
+
+    def _start_server_blocking(self) -> None:
+        """Blocking call to start the HTTP server - runs in executor thread."""
+        try:
+            _LOGGER.info("Calling prometheus_client.start_http_server", port=self._port, addr=self._addr)
+            # This call blocks indefinitely - it only returns if the server stops
+            start_http_server(self._port, self._addr, self._registry)
+            # We should never reach here unless the server stops
+            _LOGGER.warning("Prometheus metrics HTTP server stopped unexpectedly", port=self._port, addr=self._addr)
+        except Exception as exc:
+            _LOGGER.error(
+                "Exception in Prometheus HTTP server thread",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                port=self._port,
+                addr=self._addr
+            )
+            raise
 
     @contextlib.asynccontextmanager
     async def track_sample_latency(self) -> AsyncIterator[None]:
