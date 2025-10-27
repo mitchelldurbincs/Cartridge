@@ -105,6 +105,37 @@ func (o *Orchestrator) GetRun(ctx context.Context, runID string) (types.Run, err
 	return o.store.GetRun(ctx, runID)
 }
 
+// ResetRun resets a run's progress to allow restarting from step 0.
+func (o *Orchestrator) ResetRun(ctx context.Context, runID string) (types.Run, error) {
+	run, err := o.store.GetRun(ctx, runID)
+	if err != nil {
+		return types.Run{}, err
+	}
+
+	o.logger.Info().
+		Str("run_id", runID).
+		Int64("old_step", run.CurrentStep).
+		Int64("old_checkpoint", run.CheckpointVersion).
+		Msg("resetting run progress")
+
+	// Reset progress fields
+	run.CurrentStep = 0
+	run.CheckpointVersion = 0
+	run.Loss = 0
+	run.SamplesPerSecond = 0
+	run.LastHeartbeatAt = nil
+	run.RuntimeStatus = types.RuntimeStatusRunning
+	run.HealthStatus = types.RunHealthHealthy
+	run.UpdatedAt = o.now()
+
+	if err := o.store.UpdateRun(ctx, run); err != nil {
+		return types.Run{}, err
+	}
+
+	o.logger.Info().Str("run_id", runID).Msg("run progress reset successfully")
+	return run, nil
+}
+
 // HandleHeartbeat processes a learner heartbeat and updates run state.
 func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payload types.HeartbeatPayload) (types.Run, error) {
 	run, err := o.store.GetRun(ctx, runID)
@@ -112,6 +143,14 @@ func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payloa
 		return types.Run{}, err
 	}
 	if err := payload.Validate(runID, run.CurrentStep, run.CheckpointVersion); err != nil {
+		o.logger.Error().Err(err).
+			Str("run_id", runID).
+			Int64("current_step", run.CurrentStep).
+			Int64("current_checkpoint", run.CheckpointVersion).
+			Int64("payload_step", payload.Step).
+			Int64("payload_checkpoint", payload.CheckpointVersion).
+			Str("payload_status", string(payload.Status)).
+			Msg("heartbeat validation failed")
 		return types.Run{}, err
 	}
 	now := o.now()
