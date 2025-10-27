@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict, dataclass
 
@@ -90,7 +91,38 @@ class ControlClient:
 
         try:
             async with session.post(url, json=asdict(payload), timeout=10) as response:
-                response.raise_for_status()
+                if response.status >= 400:
+                    error_text = await response.text()
+                    detail = _parse_error_detail(error_text)
+                    message = detail or response.reason
+                    self._last_heartbeat_error = message
+                    self._logger.error(
+                        "Heartbeat HTTP error",
+                        run_id=self._config.run_id,
+                        step=payload.step,
+                        url=url,
+                        status_code=response.status,
+                        message=message,
+                        raw_error_body=error_text or None,
+                    )
+                    if response.status == 422 and detail:
+                        reset_url = f"{self._config.orchestrator_endpoint}/runs/{self._config.run_id}/reset"
+                        self._logger.error(
+                            "Heartbeat rejected by orchestrator",
+                            run_id=self._config.run_id,
+                            reason=detail,
+                            recovery_hint=f"Reset run progress via POST {reset_url} or resume from the last checkpoint",
+                        )
+                    if self._metrics is not None:
+                        self._metrics.heartbeat_success.set(0)
+                    raise aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=response.status,
+                        message=message,
+                        headers=response.headers,
+                    )
+
                 self._heartbeat_count += 1
 
                 # Log every 10th heartbeat or if recovering from an error
@@ -127,15 +159,6 @@ class ControlClient:
             raise
 
         except aiohttp.ClientResponseError as exc:
-            self._last_heartbeat_error = str(exc)
-            self._logger.error(
-                "Heartbeat HTTP error",
-                run_id=self._config.run_id,
-                step=payload.step,
-                url=url,
-                status_code=exc.status,
-                message=exc.message
-            )
             if self._metrics is not None:
                 self._metrics.heartbeat_success.set(0)
             raise
@@ -192,3 +215,37 @@ class ControlClient:
 
 
 __all__ = ["ControlClient", "HeartbeatPayload"]
+
+
+def _parse_error_detail(raw_body: str | bytes | None) -> str | None:
+    """Extract a human readable error message from an HTTP response body."""
+
+    if raw_body is None:
+        return None
+    if isinstance(raw_body, bytes):
+        try:
+            raw_body = raw_body.decode()
+        except Exception:
+            return None
+
+    text = raw_body.strip()
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+    if isinstance(data, dict):
+        for key in ("error", "message", "detail", "reason"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        # Fall back to a JSON string if we received a dict without known keys
+        try:
+            return json.dumps(data)
+        except (TypeError, ValueError):  # pragma: no cover - extremely defensive
+            return text
+
+    return text
