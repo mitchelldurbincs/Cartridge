@@ -1,0 +1,80 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Rust build artifacts
+**/target/
+**/*.rs.bk
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/.env
+**/*.egg-info/
+**/dist/
+**/build/
+**/.ruff_cache/
+**/.mypy_cache/
+
+# Go
+**/bin/
+**/pkg/
+**/*.test
+**/*.out
+**/go.work
+**/go.work.sum
+
+# Node.js (if any frontend exists)
+**/node_modules/
+**/npm-debug.log
+**/yarn-error.log
+**/.npm/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation and non-essential files (keep essential docs)
+docs/
+*.txt
+!requirements.txt
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Kubernetes (not needed for local docker builds)
+deployments/k8s/
+
+# Test files
+**/*_test.go
+**/*_test.rs
+**/tests/
+**/*test*.py
+**/pytest.ini
+
+# Observability configs (mounted as volumes)
+observability/
+
+# Temporary files
+**/tmp/
+**/*.tmp
+**/*.log
+**/*.bak
+
+# OS-specific
+Thumbs.DB
+.DS_Store
+
+# Keep only necessary proto files and source code
+# Everything else is excluded by default above
