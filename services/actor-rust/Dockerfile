@@ -1,35 +1,49 @@
-# Build stage
+# Base stage with build tools
 # To pin with SHA256, run: docker pull rust:1.90 && docker inspect rust:1.90 --format='{{index .RepoDigests 0}}'
 # Then use: FROM rust:1.90@sha256:<hash>
-FROM rust:1.90 AS builder
+FROM rust:1.90 AS base
 
-# Install protoc
+# Install protoc and build tools
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN cargo install sccache --version ^0.7
+RUN cargo install cargo-chef --version ^0.1
+ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
 
+# Planner stage to generate cargo-chef recipe
+FROM base AS planner
+WORKDIR /workspace
+COPY services/actor-rust/ services/actor-rust/
+COPY services/engine-rust/ services/engine-rust/
+COPY proto/ proto/
+WORKDIR /workspace/services/actor-rust
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef prepare --recipe-path recipe.json
+
+# Builder stage
+FROM base AS builder
 WORKDIR /workspace
 
-# Copy manifests first for dependency caching
-# This layer will be cached unless Cargo.toml changes
-COPY services/actor-rust/Cargo.toml services/actor-rust/Cargo.lock* services/actor-rust/
-COPY services/actor-rust/build.rs services/actor-rust/
+# Copy proto files needed for build
 COPY proto/ proto/
 
-# Create dummy source to build dependencies
-RUN mkdir -p services/actor-rust/src && \
-    echo "fn main() {}" > services/actor-rust/src/main.rs
-
-# Build dependencies only - this layer caches all dependency compilation
+# Build dependencies using cargo-chef
 WORKDIR /workspace/services/actor-rust
-RUN cargo build --release || true
+COPY --from=planner /workspace/services/actor-rust/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json
 
-# Now copy the actual source code
+# Copy actual source code
 WORKDIR /workspace
 COPY services/engine-rust/ services/engine-rust/
 COPY services/actor-rust/ services/actor-rust/
 
 # Build the application with real source
 WORKDIR /workspace/services/actor-rust
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo build --release
 
 # Runtime stage
 # To pin with SHA256, run: docker pull debian:bookworm-slim && docker inspect debian:bookworm-slim --format='{{index .RepoDigests 0}}'
