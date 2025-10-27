@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -147,5 +148,48 @@ func TestStreamMetricsLifecycle(t *testing.T) {
 	stop()
 	if metrics.cancelled != 1 {
 		t.Fatalf("expected subscriber cancellation to be recorded, got %d", metrics.cancelled)
+	}
+}
+
+func TestPublishSetsPublishedAtWhenMissing(t *testing.T) {
+	reg := &stubRegistry{}
+	logger := zerolog.New(io.Discard)
+	svc := New(reg, logger)
+
+	snapshot, err := svc.Publish(context.Background(), PublishInput{
+		RunID:       "run-1",
+		Step:        1,
+		Checksum:    "checksum",
+		ArtifactURI: "s3://bucket/object",
+	})
+	if err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+	if reg.upsertInput.PublishedAt.IsZero() {
+		t.Fatal("expected Publish to populate PublishedAt when missing")
+	}
+	if snapshot.PublishedAt.IsZero() {
+		t.Fatal("expected snapshot to include PublishedAt")
+	}
+}
+
+func TestPublishPropagatesRegistryError(t *testing.T) {
+	upsertErr := errors.New("boom")
+	reg := &stubRegistry{upsertErr: upsertErr}
+	metrics := &stubMetrics{}
+	logger := zerolog.New(io.Discard)
+	svc := New(reg, logger, WithMetrics(metrics))
+
+	_, err := svc.Publish(context.Background(), PublishInput{
+		RunID:       "run-1",
+		Step:        1,
+		Checksum:    "checksum",
+		ArtifactURI: "s3://bucket/object",
+	})
+	if !errors.Is(err, upsertErr) {
+		t.Fatalf("expected upsert error to be returned, got %v", err)
+	}
+	if metrics.publishCalls != 1 || metrics.lastErr == nil {
+		t.Fatalf("expected metrics to record failure, got calls=%d err=%v", metrics.publishCalls, metrics.lastErr)
 	}
 }
