@@ -1,14 +1,27 @@
 # Build stage
 FROM golang:1.24 AS builder
 
+# Install protoc and Go protobuf plugins
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
 WORKDIR /workspace
 
-# Copy the entire workspace to get access to orchestrator-go dependencies
+# Copy proto files and replay service
+COPY proto/ proto/
 COPY services/replay-go/ services/replay-go/
 COPY services/orchestrator-go/internal/thirdparty/ services/orchestrator-go/internal/thirdparty/
 
 # Set working directory to replay service
 WORKDIR /workspace/services/replay-go
+
+# Generate protobuf code
+RUN mkdir -p pkg/proto && \
+    protoc --go_out=pkg/proto --go_opt=paths=source_relative \
+           --go-grpc_out=pkg/proto --go-grpc_opt=paths=source_relative \
+           --proto_path=../../proto \
+           replay/v1/replay.proto
 
 # Download dependencies
 RUN go mod download
