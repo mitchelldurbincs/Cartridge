@@ -48,6 +48,7 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/runs", s.handleCreateRun)
 		r.Get("/runs/{runID}", s.handleGetRun)
 		r.Post("/runs/{runID}/heartbeat", s.handleHeartbeat)
+		r.Post("/runs/{runID}/reset", s.handleResetRun)
 		r.Post("/runs/{runID}/commands", s.handleCreateCommand)
 		r.Get("/runs/{runID}/commands/next", s.handleNextCommand)
 		r.Post("/runs/{runID}/commands/{commandID}/ack", s.handleAckCommand)
@@ -94,6 +95,21 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, status, run)
 }
 
+func (s *Server) handleResetRun(w http.ResponseWriter, r *http.Request) {
+	record := s.observeRequest(r)
+	status := http.StatusInternalServerError
+	defer func() { record(status) }()
+
+	runID := chi.URLParam(r, "runID")
+	run, err := s.orch.ResetRun(r.Context(), runID)
+	if err != nil {
+		status = s.respondError(w, err)
+		return
+	}
+	status = http.StatusOK
+	s.writeJSON(w, status, run)
+}
+
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	record := s.observeRequest(r)
 	status := http.StatusInternalServerError
@@ -109,12 +125,28 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var payload types.HeartbeatPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		status = http.StatusBadRequest
+		s.logger.Error().Err(err).Msg("failed to decode heartbeat payload")
 		s.writeError(w, status, "invalid heartbeat payload")
 		return
 	}
 	runID := chi.URLParam(r, "runID")
+	s.logger.Debug().
+		Str("run_id", runID).
+		Str("status", string(payload.Status)).
+		Int64("step", payload.Step).
+		Int64("checkpoint_version", payload.CheckpointVersion).
+		Float64("samples_per_sec", payload.SamplesPerSecond).
+		Float64("loss", payload.Loss).
+		Msg("received heartbeat")
 	run, err := s.orch.HandleHeartbeat(r.Context(), runID, payload)
 	if err != nil {
+		s.logger.Error().Err(err).
+			Str("run_id", runID).
+			Str("payload_run_id", payload.RunID).
+			Str("payload_status", string(payload.Status)).
+			Int64("payload_step", payload.Step).
+			Int64("payload_checkpoint", payload.CheckpointVersion).
+			Msg("heartbeat validation or processing failed")
 		status = s.respondError(w, err)
 		return
 	}
