@@ -1,5 +1,6 @@
 cartridge/
 ├─ services/
+│  ├─ actor-rust/                      # Game actor service (Rust)
 │  ├─ orchestrator-go/
 │  ├─ replay-go/
 │  ├─ weights-go/
