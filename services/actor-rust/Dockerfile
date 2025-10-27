@@ -24,8 +24,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM base AS builder
 WORKDIR /workspace
 
-# Copy proto files needed for build
+# Copy proto files and engine-rust (contains cartridge-observability dependency)
 COPY proto/ proto/
+COPY services/engine-rust/ services/engine-rust/
 
 # Build dependencies using cargo-chef
 WORKDIR /workspace/services/actor-rust
