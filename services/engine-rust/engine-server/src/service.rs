@@ -1313,4 +1313,628 @@ mod tests {
         assert_eq!(second_step.reward, second_again.reward);
         assert_eq!(second_step.info, second_again.info);
     }
+
+    // Tests for sample_random_action function
+
+    #[test]
+    fn test_sample_discrete_action() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Discrete(5);
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(buf.len(), 1);
+        assert!(buf[0] < 5);
+    }
+
+    #[test]
+    fn test_sample_discrete_action_zero_n() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Discrete(0);
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Discrete action space with n=0"));
+    }
+
+    #[test]
+    fn test_sample_multi_discrete_action() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::MultiDiscrete(vec![3, 4, 5]);
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(buf.len(), 3);
+        assert!(buf[0] < 3);
+        assert!(buf[1] < 4);
+        assert!(buf[2] < 5);
+    }
+
+    #[test]
+    fn test_sample_multi_discrete_action_with_zero() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::MultiDiscrete(vec![3, 0, 5]);
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("MultiDiscrete action space with n=0"));
+    }
+
+    #[test]
+    fn test_sample_continuous_action() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Continuous {
+            low: vec![-1.0, -2.0],
+            high: vec![1.0, 2.0],
+            shape: vec![2],
+        };
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_ok());
+        // 2 f32 values = 8 bytes
+        assert_eq!(buf.len(), 8);
+
+        // Decode and verify values are in range
+        let val1 = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let val2 = f32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+
+        assert!(val1 >= -1.0 && val1 <= 1.0);
+        assert!(val2 >= -2.0 && val2 <= 2.0);
+    }
+
+    #[test]
+    fn test_sample_continuous_action_shape_mismatch() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Continuous {
+            low: vec![-1.0, -2.0],
+            high: vec![1.0, 2.0],
+            shape: vec![3], // Shape product (3) != low.len() (2)
+        };
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("shape mismatch"));
+    }
+
+    #[test]
+    fn test_sample_continuous_action_low_high_mismatch() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Continuous {
+            low: vec![-1.0, -2.0],
+            high: vec![1.0], // Different length than low
+            shape: vec![2],
+        };
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("low/high length mismatch"));
+    }
+
+    #[test]
+    fn test_sample_continuous_action_multidimensional() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        // 2x3 action space = 6 values
+        let action_space = ActionSpace::Continuous {
+            low: vec![-1.0, -1.0, -1.0, -1.0, -1.0, -1.0],
+            high: vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            shape: vec![2, 3],
+        };
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let mut buf = Vec::new();
+
+        let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
+        assert!(result.is_ok());
+        // 6 f32 values = 24 bytes
+        assert_eq!(buf.len(), 24);
+    }
+
+    #[test]
+    fn test_sample_action_determinism() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let action_space = ActionSpace::Continuous {
+            low: vec![-1.0, -2.0],
+            high: vec![1.0, 2.0],
+            shape: vec![2],
+        };
+
+        // Sample with same seed twice
+        let mut rng1 = ChaCha20Rng::seed_from_u64(42);
+        let mut buf1 = Vec::new();
+        EngineService::sample_random_action(&action_space, &mut rng1, &mut buf1).unwrap();
+
+        let mut rng2 = ChaCha20Rng::seed_from_u64(42);
+        let mut buf2 = Vec::new();
+        EngineService::sample_random_action(&action_space, &mut rng2, &mut buf2).unwrap();
+
+        // Should produce identical results
+        assert_eq!(buf1, buf2);
+    }
+
+    // End-to-end integration tests
+
+    #[tokio::test]
+    async fn test_full_game_lifecycle_until_done() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let engine_id = EngineId {
+            env_id: "tictactoe".to_string(),
+            build_id: "test".to_string(),
+        };
+
+        // Reset the game
+        let reset_request = Request::new(ResetRequest {
+            id: Some(engine_id.clone()),
+            seed: 123,
+            hint: Vec::new(),
+        });
+
+        let reset_response = service.reset(reset_request).await.unwrap();
+        let mut current_state = reset_response.into_inner().state;
+
+        // Play the game until it's done (max 9 moves for TicTacToe)
+        let mut step_count = 0;
+        let mut done = false;
+        let max_steps = 9;
+
+        while !done && step_count < max_steps {
+            // Take a step (using position as action)
+            let step_request = Request::new(StepRequest {
+                id: Some(engine_id.clone()),
+                state: current_state.clone(),
+                action: vec![step_count as u8],
+            });
+
+            let step_response = service.step(step_request).await.unwrap();
+            let step_result = step_response.into_inner();
+
+            current_state = step_result.state;
+            done = step_result.done;
+            step_count += 1;
+
+            // Verify state and obs are non-empty
+            assert!(!current_state.is_empty());
+            assert!(!step_result.obs.is_empty());
+        }
+
+        // TicTacToe should finish within 9 moves
+        assert!(step_count <= max_steps);
+        assert!(done);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_game_lifecycle_sequences() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let engine_id = EngineId {
+            env_id: "tictactoe".to_string(),
+            build_id: "test".to_string(),
+        };
+
+        // Run 3 complete games
+        for game_num in 0..3 {
+            let reset_request = Request::new(ResetRequest {
+                id: Some(engine_id.clone()),
+                seed: 100 + game_num,
+                hint: Vec::new(),
+            });
+
+            let reset_response = service.reset(reset_request).await.unwrap();
+            let mut current_state = reset_response.into_inner().state;
+
+            let mut step_count = 0;
+            let mut done = false;
+
+            while !done && step_count < 9 {
+                let step_request = Request::new(StepRequest {
+                    id: Some(engine_id.clone()),
+                    state: current_state.clone(),
+                    action: vec![step_count as u8],
+                });
+
+                let step_response = service.step(step_request).await.unwrap();
+                let step_result = step_response.into_inner();
+
+                current_state = step_result.state;
+                done = step_result.done;
+                step_count += 1;
+            }
+
+            // Each game should complete
+            assert!(done);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_game_state_progression() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let engine_id = EngineId {
+            env_id: "tictactoe".to_string(),
+            build_id: "test".to_string(),
+        };
+
+        // Reset
+        let reset_response = service
+            .reset(Request::new(ResetRequest {
+                id: Some(engine_id.clone()),
+                seed: 777,
+                hint: Vec::new(),
+            }))
+            .await
+            .unwrap();
+
+        let state0 = reset_response.into_inner().state;
+
+        // Take first step
+        let step1_response = service
+            .step(Request::new(StepRequest {
+                id: Some(engine_id.clone()),
+                state: state0.clone(),
+                action: vec![0],
+            }))
+            .await
+            .unwrap();
+
+        let step1 = step1_response.into_inner();
+        let state1 = step1.state.clone();
+
+        // Take second step
+        let step2_response = service
+            .step(Request::new(StepRequest {
+                id: Some(engine_id.clone()),
+                state: state1.clone(),
+                action: vec![1],
+            }))
+            .await
+            .unwrap();
+
+        let step2 = step2_response.into_inner();
+        let state2 = step2.state;
+
+        // Verify states are different (game is progressing)
+        assert_ne!(state0, state1);
+        assert_ne!(state1, state2);
+        assert_ne!(state0, state2);
+
+        // Verify game hasn't finished yet after 2 moves
+        assert!(!step1.done);
+        assert!(!step2.done);
+    }
+
+    // Additional batch_simulate tests for edge cases and error handling
+
+    #[tokio::test]
+    async fn test_batch_simulate_with_zero_max_steps() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![engine_proto::TrajectoryConfig {
+                seed: 42,
+                hint: Vec::new(),
+                max_steps: 0, // Zero steps - should use max_horizon
+            }],
+            return_states: false,
+            return_observations: false,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        // Should still produce results using max_horizon
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_large_batch() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+
+        // Create a large batch of 50 trajectories
+        let mut trajectories = Vec::new();
+        for i in 0..50 {
+            trajectories.push(engine_proto::TrajectoryConfig {
+                seed: i,
+                hint: Vec::new(),
+                max_steps: 5,
+            });
+        }
+
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories,
+            return_states: false,
+            return_observations: false,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 50);
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_return_states_only() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![engine_proto::TrajectoryConfig {
+                seed: 42,
+                hint: Vec::new(),
+                max_steps: 3,
+            }],
+            return_states: true,
+            return_observations: false,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 1);
+        let trajectory = &all_trajectories[0];
+        assert!(!trajectory.steps.is_empty());
+
+        // States should be present, observations should be empty
+        for step in &trajectory.steps {
+            assert!(!step.state.is_empty());
+            assert!(step.obs.is_empty());
+            assert!(!step.action.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_return_observations_only() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![engine_proto::TrajectoryConfig {
+                seed: 42,
+                hint: Vec::new(),
+                max_steps: 3,
+            }],
+            return_states: false,
+            return_observations: true,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 1);
+        let trajectory = &all_trajectories[0];
+        assert!(!trajectory.steps.is_empty());
+
+        // Observations should be present, states should be empty
+        for step in &trajectory.steps {
+            assert!(step.state.is_empty());
+            assert!(!step.obs.is_empty());
+            assert!(!step.action.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_return_both() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![engine_proto::TrajectoryConfig {
+                seed: 42,
+                hint: Vec::new(),
+                max_steps: 3,
+            }],
+            return_states: true,
+            return_observations: true,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 1);
+        let trajectory = &all_trajectories[0];
+        assert!(!trajectory.steps.is_empty());
+
+        // Both states and observations should be present
+        for step in &trajectory.steps {
+            assert!(!step.state.is_empty());
+            assert!(!step.obs.is_empty());
+            assert!(!step.action.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_multiple_trajectories() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![
+                engine_proto::TrajectoryConfig {
+                    seed: 100,
+                    hint: Vec::new(),
+                    max_steps: 5,
+                },
+                engine_proto::TrajectoryConfig {
+                    seed: 200,
+                    hint: Vec::new(),
+                    max_steps: 5,
+                },
+                engine_proto::TrajectoryConfig {
+                    seed: 300,
+                    hint: Vec::new(),
+                    max_steps: 5,
+                },
+            ],
+            return_states: false,
+            return_observations: false,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        // Verify we got all 3 trajectories back
+        assert_eq!(all_trajectories.len(), 3);
+
+        // Verify each trajectory has the correct trajectory_id
+        assert_eq!(all_trajectories[0].trajectory_id, 0);
+        assert_eq!(all_trajectories[1].trajectory_id, 1);
+        assert_eq!(all_trajectories[2].trajectory_id, 2);
+
+        // Verify all trajectories completed
+        for traj in &all_trajectories {
+            assert!(!traj.steps.is_empty());
+            assert!(traj.total_steps > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_simulate_max_steps_limits_trajectory() {
+        setup_test_registry();
+
+        let service = EngineService::new();
+        let request = Request::new(BatchSimulateRequest {
+            id: Some(EngineId {
+                env_id: "tictactoe".to_string(),
+                build_id: "test".to_string(),
+            }),
+            trajectories: vec![engine_proto::TrajectoryConfig {
+                seed: 42,
+                hint: Vec::new(),
+                max_steps: 2, // Limit to just 2 steps
+            }],
+            return_states: false,
+            return_observations: false,
+        });
+
+        let response = service.batch_simulate(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        let mut all_trajectories = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.unwrap();
+            all_trajectories.extend(chunk.trajectories);
+            if chunk.final_chunk {
+                break;
+            }
+        }
+
+        assert_eq!(all_trajectories.len(), 1);
+        let trajectory = &all_trajectories[0];
+        // Should have at most 2 steps
+        assert!(trajectory.steps.len() <= 2);
+    }
 }
