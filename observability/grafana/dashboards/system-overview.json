@@ -92,18 +92,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"engine\"}",
-          "legendFormat": "Engine",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "expr": "up{job=\"learner\"}",
           "legendFormat": "Learner",
-          "refId": "B"
+          "refId": "A"
         },
         {
           "datasource": {
@@ -112,7 +103,7 @@
           },
           "expr": "up{job=\"orchestrator\"}",
           "legendFormat": "Orchestrator",
-          "refId": "C"
+          "refId": "B"
         },
         {
           "datasource": {
@@ -121,7 +112,7 @@
           },
           "expr": "up{job=\"replay\"}",
           "legendFormat": "Replay",
-          "refId": "D"
+          "refId": "C"
         },
         {
           "datasource": {
@@ -130,7 +121,7 @@
           },
           "expr": "up{job=\"weights\"}",
           "legendFormat": "Weights",
-          "refId": "E"
+          "refId": "D"
         },
         {
           "datasource": {
@@ -139,16 +130,7 @@
           },
           "expr": "up{job=\"web\"}",
           "legendFormat": "Web",
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=\"actor\"}",
-          "legendFormat": "Actor",
-          "refId": "G"
+          "refId": "E"
         }
       ],
       "title": "Service Health Status",
@@ -319,12 +301,21 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "actor_episode_last_return",
-          "legendFormat": "Episode Return - {{env_id}}",
+          "expr": "learner_policy_loss",
+          "legendFormat": "Policy Loss",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "learner_value_loss",
+          "legendFormat": "Value Loss",
+          "refId": "B"
         }
       ],
-      "title": "Episode Returns",
+      "title": "Training Losses",
       "type": "timeseries"
     },
     {
@@ -406,18 +397,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(engine_rpc_requests_total[1m])) by (job)",
-          "legendFormat": "Engine RPCs",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "expr": "sum(rate(replay_store_requests_total[1m]))",
           "legendFormat": "Replay Stores",
-          "refId": "B"
+          "refId": "A"
         },
         {
           "datasource": {
@@ -426,10 +408,10 @@
           },
           "expr": "sum(rate(replay_sample_requests_total[1m]))",
           "legendFormat": "Replay Samples",
-          "refId": "C"
+          "refId": "B"
         }
       ],
-      "title": "System Request Rates",
+      "title": "Replay Request Rates",
       "type": "timeseries"
     },
     {
@@ -519,18 +501,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(engine_rpc_failures_total[5m])) / (sum(rate(engine_rpc_success_total[5m])) + sum(rate(engine_rpc_failures_total[5m])))",
-          "legendFormat": "Engine Error Rate",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "expr": "sum(rate(replay_store_requests_total{result=\"error\"}[5m])) / sum(rate(replay_store_requests_total[5m]))",
           "legendFormat": "Replay Store Error Rate",
-          "refId": "B"
+          "refId": "A"
         },
         {
           "datasource": {
@@ -539,16 +512,7 @@
           },
           "expr": "sum(rate(learner_sample_results_total{result=\"error\"}[5m])) / sum(rate(learner_sample_results_total[5m]))",
           "legendFormat": "Learner Sample Error Rate",
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(actor_episode_results_total{result=\"error\"}[5m])) / sum(rate(actor_episode_results_total[5m]))",
-          "legendFormat": "Actor Episode Error Rate",
-          "refId": "D"
+          "refId": "B"
         }
       ],
       "title": "Error Rates by Service",
@@ -633,93 +597,6 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "actor_transitions_buffered",
-          "legendFormat": "Buffered - {{env_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Actor Transitions Buffered",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 22
-      },
-      "id": 7,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "lastNotNull"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "expr": "learner_replay_queue_depth",
           "legendFormat": "Learner Queue Depth",
           "refId": "A"
@@ -785,10 +662,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 30
+        "x": 12,
+        "y": 22
       },
-      "id": 8,
+      "id": 7,
       "options": {
         "legend": {
           "calcs": ["lastNotNull"],
@@ -903,10 +780,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 30
       },
-      "id": 9,
+      "id": 8,
       "options": {
         "legend": {
           "calcs": ["sum"],
@@ -940,6 +817,111 @@
         }
       ],
       "title": "Weights Publish Results",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, rate(orchestrator_heartbeat_latency_seconds_bucket[5m]))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, rate(orchestrator_heartbeat_latency_seconds_bucket[5m]))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, rate(orchestrator_heartbeat_latency_seconds_bucket[5m]))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "title": "Orchestrator Heartbeat Latency",
       "type": "timeseries"
     }
   ],
