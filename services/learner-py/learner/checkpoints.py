@@ -309,9 +309,17 @@ class CheckpointManager:
             )
             raise
 
+        # Optimizer states need to live on the same device as the model parameters to avoid
+        # device mismatches once training resumes. Infer the target device from the provided
+        # model and ensure tensors are materialized there during load.
+        target_tensor = next(model.parameters(), None)
+        if target_tensor is None:
+            target_tensor = next(model.buffers(), None)
+        target_device = target_tensor.device if target_tensor is not None else torch.device("cpu")
+
         try:
             optimizer_state = await loop.run_in_executor(
-                None, lambda: torch.load(str(optimizer_path), map_location="cpu")
+                None, lambda: torch.load(str(optimizer_path), map_location=target_device)
             )
         except Exception as exc:
             self._logger.error(
