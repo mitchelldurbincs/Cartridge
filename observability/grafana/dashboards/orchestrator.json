@@ -71,7 +71,7 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -100,8 +100,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"engine\"}",
-          "legendFormat": "engine",
+          "expr": "histogram_quantile(0.50, sum(rate(orchestrator_heartbeat_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
           "refId": "A"
         },
         {
@@ -109,8 +109,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"learner\"}",
-          "legendFormat": "learner",
+          "expr": "histogram_quantile(0.95, sum(rate(orchestrator_heartbeat_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
           "refId": "B"
         },
         {
@@ -118,48 +118,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"orchestrator\"}",
-          "legendFormat": "orchestrator",
+          "expr": "histogram_quantile(0.99, sum(rate(orchestrator_heartbeat_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=\"replay\"}",
-          "legendFormat": "replay",
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=\"weights\"}",
-          "legendFormat": "weights",
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=\"web\"}",
-          "legendFormat": "web",
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=\"actor\"}",
-          "legendFormat": "actor",
-          "refId": "G"
         }
       ],
-      "title": "Service Health Status",
+      "title": "Heartbeat Latency Quantiles",
       "type": "timeseries"
     },
     {
@@ -212,7 +176,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -241,12 +205,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(learner_sgd_steps_total[1m])",
-          "legendFormat": "steps/s",
+          "expr": "rate(orchestrator_heartbeat_latency_seconds_sum[5m]) / rate(orchestrator_heartbeat_latency_seconds_count[5m])",
+          "legendFormat": "avg latency",
           "refId": "A"
         }
       ],
-      "title": "Learner SGD Step Rate",
+      "title": "Heartbeat Lag (Average)",
       "type": "timeseries"
     },
     {
@@ -312,8 +276,10 @@
       "id": 3,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -328,21 +294,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(learner_sample_results_total{result=\"success\"}[5m])) / sum(rate(learner_sample_attempts_total[5m]))",
-          "legendFormat": "success",
+          "expr": "sum(rate(orchestrator_run_state_transitions_total[5m])) by (from, to)",
+          "legendFormat": "{{from}} \u2192 {{to}}",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(learner_sample_results_total{result=\"error\"}[5m])) / sum(rate(learner_sample_attempts_total[5m]))",
-          "legendFormat": "error",
-          "refId": "B"
         }
       ],
-      "title": "Learner Sample Success Ratio",
+      "title": "Run State Transitions",
       "type": "timeseries"
     },
     {
@@ -424,110 +381,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "actor_episode_last_return",
-          "legendFormat": "{{env_id}}",
+          "expr": "sum(rate(orchestrator_health_events_total[5m])) by (severity)",
+          "legendFormat": "{{severity}}",
           "refId": "A"
         }
       ],
-      "title": "Actor Episode Returns",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 32
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [
-            "avg"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(engine_batch_simulate_trajectories_total[1m])",
-          "legendFormat": "trajectories/s",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(engine_batch_simulate_steps_total[1m])",
-          "legendFormat": "steps/s",
-          "refId": "B"
-        }
-      ],
-      "title": "Engine Batch Simulate Throughput",
+      "title": "Health Events by Severity",
       "type": "timeseries"
     },
     {
@@ -581,6 +440,93 @@
             ]
           },
           "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(orchestrator_health_events_total[5m])) by (type)",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Events by Type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -609,373 +555,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(engine_rpc_failures_total[5m])) / (sum(rate(engine_rpc_success_total[5m])) + sum(rate(engine_rpc_failures_total[5m])))",
-          "legendFormat": "error rate",
+          "expr": "sum(rate(orchestrator_http_request_duration_seconds_count[1m])) by (route)",
+          "legendFormat": "{{route}}",
           "refId": "A"
         }
       ],
-      "title": "Engine RPC Error Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 48
-      },
-      "id": 7,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(replay_store_requests_total[1m]))",
-          "legendFormat": "store requests",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(replay_sample_requests_total[1m]))",
-          "legendFormat": "sample requests",
-          "refId": "B"
-        }
-      ],
-      "title": "Replay Request Rates",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 56
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(replay_sample_transitions_total[1m]))",
-          "legendFormat": "transitions/s",
-          "refId": "A"
-        }
-      ],
-      "title": "Replay Sample Transitions",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 64
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(orchestrator_health_events_total[5m])) by (severity)",
-          "legendFormat": "{{severity}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Orchestrator Health Events",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 72
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(weights_publish_total[1m])) by (result)",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Weights Publish Outcomes",
+      "title": "HTTP Request Rate",
       "type": "timeseries"
     },
     {
@@ -1036,9 +621,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 48
       },
-      "id": 11,
+      "id": 7,
       "options": {
         "legend": {
           "calcs": [],
@@ -1057,97 +642,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(weights_publish_latency_seconds_sum[5m]) / rate(weights_publish_latency_seconds_count[5m])",
-          "legendFormat": "avg latency",
-          "refId": "A"
-        }
-      ],
-      "title": "Weights Publish Latency (Average)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 88
-      },
-      "id": 12,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "learner_replay_queue_depth",
-          "legendFormat": "learner queue",
+          "expr": "histogram_quantile(0.50, sum(rate(orchestrator_http_request_duration_seconds_bucket[5m])) by (le, route, method))",
+          "legendFormat": "p50 {{method}} {{route}}",
           "refId": "A"
         },
         {
@@ -1155,20 +651,28 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(actor_transitions_buffered)",
-          "legendFormat": "actor buffered",
+          "expr": "histogram_quantile(0.95, sum(rate(orchestrator_http_request_duration_seconds_bucket[5m])) by (le, route, method))",
+          "legendFormat": "p95 {{method}} {{route}}",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(orchestrator_http_request_duration_seconds_bucket[5m])) by (le, route, method))",
+          "legendFormat": "p99 {{method}} {{route}}",
+          "refId": "C"
         }
       ],
-      "title": "System Buffers",
+      "title": "HTTP Request Latency Quantiles",
       "type": "timeseries"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 38,
   "tags": [
-    "overview",
-    "system",
+    "orchestrator",
     "cartridge"
   ],
   "templating": {
@@ -1180,8 +684,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Cartridge System Overview",
-  "uid": "cartridge-system",
+  "title": "Cartridge Orchestrator Service",
+  "uid": "cartridge-orchestrator",
   "version": 0,
   "weekStart": ""
 }
