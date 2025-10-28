@@ -142,6 +142,12 @@ class PPOLearner(AlgorithmProtocol):
     def optimizer(self) -> Adam:
         return self._optimizer
 
+    def set_step(self, step: int) -> None:
+        if step < 0:
+            raise ValueError("Step must be non-negative")
+        self._logger.info("Restoring PPO step counter", previous_step=self._step, restored_step=step)
+        self._step = step
+
     def _ensure_advantages(self, batch: TransitionBatch) -> tuple[torch.Tensor, torch.Tensor]:
         if batch.advantages is not None and batch.returns is not None:
             return batch.advantages, batch.returns

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 import structlog
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from torch import nn, optim
 
 from .config import CheckpointConfig
@@ -54,6 +54,8 @@ class CheckpointManager:
             interval_steps=config.interval_steps,
             keep_last=config.keep_last
         )
+
+        self._load_existing_manifests()
 
     async def save(
         self,
@@ -199,6 +201,145 @@ class CheckpointManager:
     @property
     def latest(self) -> CheckpointManifest | None:
         return self._manifests[0] if self._manifests else None
+
+    def _load_existing_manifests(self) -> None:
+        """Discover checkpoint manifests that were created in previous runs."""
+
+        if not self._base_path.exists():
+            return
+
+        discovered: list[CheckpointManifest] = []
+        pattern = re.compile(r"step_(?P<step>\d+)$")
+
+        for entry in sorted(self._base_path.iterdir(), reverse=True):
+            if not entry.is_dir():
+                continue
+
+            match = pattern.match(entry.name)
+            if match is None:
+                continue
+
+            try:
+                step = int(match.group("step"))
+            except ValueError:
+                self._logger.warning(
+                    "Failed to parse checkpoint directory step",
+                    directory=str(entry),
+                )
+                continue
+
+            manifest_path = entry / "MANIFEST.json"
+            metadata: Mapping[str, Any] = {}
+            checksum: str | None = None
+
+            if manifest_path.exists():
+                try:
+                    data = json.loads(manifest_path.read_text())
+                    metadata = {k: v for k, v in data.items() if k != "step"}
+                    checksum = data.get("weights_checksum_sha256")
+                except (OSError, json.JSONDecodeError) as exc:
+                    self._logger.warning(
+                        "Failed to read checkpoint manifest",
+                        path=str(manifest_path),
+                        error=str(exc),
+                    )
+
+            weights_path = entry / "weights.safetensors"
+            if not weights_path.exists():
+                self._logger.warning(
+                    "Checkpoint weights file missing",
+                    path=str(weights_path),
+                )
+                continue
+
+            if not checksum:
+                try:
+                    checksum = _compute_file_sha256(weights_path)
+                except OSError as exc:
+                    self._logger.warning(
+                        "Failed to compute checksum for checkpoint",
+                        path=str(weights_path),
+                        error=str(exc),
+                    )
+                    continue
+
+            discovered.append(
+                CheckpointManifest(
+                    step=step,
+                    path=weights_path,
+                    checksum=checksum,
+                    metadata=metadata,
+                )
+            )
+
+        if not discovered:
+            return
+
+        discovered.sort(key=lambda manifest: manifest.step, reverse=True)
+        self._manifests.extend(discovered)
+
+        self._logger.info(
+            "Discovered existing checkpoints",
+            total_checkpoints=len(self._manifests),
+            latest_step=self._manifests[0].step,
+        )
+
+    async def restore_latest(self, model: nn.Module, optimizer: optim.Optimizer) -> CheckpointManifest | None:
+        """Load the most recent checkpoint into the provided algorithm."""
+
+        async with self._lock:
+            manifest = self.latest
+
+        if manifest is None:
+            self._logger.info("No checkpoint available to restore")
+            return None
+
+        weights_path = manifest.path
+        optimizer_path = weights_path.parent / "optimizer.pt"
+
+        loop = asyncio.get_running_loop()
+
+        try:
+            state_dict = await loop.run_in_executor(None, lambda: load_file(str(weights_path)))
+        except Exception as exc:
+            self._logger.error(
+                "Failed to load checkpoint weights",
+                path=str(weights_path),
+                error=str(exc),
+            )
+            raise
+
+        # Optimizer states need to live on the same device as the model parameters to avoid
+        # device mismatches once training resumes. Infer the target device from the provided
+        # model and ensure tensors are materialized there during load.
+        target_tensor = next(model.parameters(), None)
+        if target_tensor is None:
+            target_tensor = next(model.buffers(), None)
+        target_device = target_tensor.device if target_tensor is not None else torch.device("cpu")
+
+        try:
+            optimizer_state = await loop.run_in_executor(
+                None, lambda: torch.load(str(optimizer_path), map_location=target_device)
+            )
+        except Exception as exc:
+            self._logger.error(
+                "Failed to load optimizer state",
+                path=str(optimizer_path),
+                error=str(exc),
+            )
+            raise
+
+        model.load_state_dict(state_dict)
+        optimizer.load_state_dict(optimizer_state)
+
+        self._logger.info(
+            "Restored checkpoint",
+            step=manifest.step,
+            weights_path=str(weights_path),
+            optimizer_path=str(optimizer_path),
+        )
+
+        return manifest
 
 
 __all__ = ["CheckpointManager", "CheckpointManifest"]

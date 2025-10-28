@@ -63,6 +63,8 @@ class LearnerCore:
     async def run(self) -> None:
         self._logger.info("Starting training loop", algorithm=self._config.algorithm.name,
                          device=self._config.training.device, rollout_size=self._config.training.rollout_size)
+
+        await self._maybe_restore_from_checkpoint()
         self._metrics.start_exporter()
 
         async with self._replay_client:
@@ -201,6 +203,23 @@ class LearnerCore:
                 duration_ms=round((time.perf_counter() - start) * 1000, 2)
             )
             raise
+
+    async def _maybe_restore_from_checkpoint(self) -> None:
+        manifest = await self._checkpoints.restore_latest(self._algorithm.model, self._algorithm.optimizer)
+        if manifest is None:
+            return
+
+        self._algorithm.set_step(manifest.step)
+        self._next_checkpoint_step = max(
+            manifest.step + self._config.checkpoints.interval_steps,
+            self._next_checkpoint_step,
+        )
+
+        self._logger.info(
+            "Restored learner state from checkpoint",
+            step=manifest.step,
+            next_checkpoint=self._next_checkpoint_step,
+        )
 
     async def _maybe_publish_weights(self, update: AlgorithmUpdate) -> None:
         # Already handled inside checkpoint logic for the MVP cadence.
