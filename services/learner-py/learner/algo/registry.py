@@ -25,6 +25,9 @@ class AlgorithmProtocol(Protocol):
     def optimizer(self) -> optim.Optimizer:
         ...
 
+    def set_step(self, step: int) -> None:
+        ...
+
 
 AlgorithmFactory = Callable[[AlgorithmConfig, TrainingConfig], AlgorithmProtocol]
 
