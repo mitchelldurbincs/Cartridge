@@ -173,7 +173,7 @@ impl Actor {
                                 total_reward as f64,
                                 "env_id" => env_label.clone()
                             );
-                            info!(
+                            debug!(
                                 episode = new_count,
                                 steps,
                                 total_reward,
@@ -181,7 +181,7 @@ impl Actor {
                                 "Episode completed"
                             );
                             if new_count % 10 == 0 {
-                                info!("Completed {} episodes", new_count);
+                                debug!("Completed {} episodes", new_count);
                             }
                         }
                         Err(e) => {
@@ -231,7 +231,7 @@ impl Actor {
             hint: vec![],
         });
 
-        info!(
+        debug!(
             episode = episode_count + 1,
             env_id = %self.config.env_id,
             "Starting new episode"
@@ -374,13 +374,13 @@ impl Actor {
         match self.replay_client.clone().store_batch(request).await {
             Ok(_) => {
                 if count >= self.config.batch_size {
-                    info!(
+                    debug!(
                         transitions = count,
                         batch_size = self.config.batch_size,
                         "Flushed full batch of transitions to replay"
                     );
                 } else {
-                    info!(
+                    debug!(
                         transitions = count,
                         "Flushed partial batch of transitions to replay"
                     );
