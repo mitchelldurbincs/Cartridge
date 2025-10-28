@@ -132,6 +132,7 @@ class LearnerCore:
         self._stopping.set()
         await self._replay_client.stop()
         await self._weights.close()
+        self._metrics.stop_exporter()
         self._logger.info("Training loop stopped successfully")
 
     async def _fetch_batch(self) -> TransitionBatch:
