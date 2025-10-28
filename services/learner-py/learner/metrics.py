@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import structlog
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from prometheus_client import (
     CollectorRegistry,
@@ -83,47 +82,39 @@ class MetricsRegistry:
             "Number of weight updates published",
             registry=self._registry,
         )
-        self._server_task: asyncio.Task[None] | None = None
+        self._http_server: Any | None = None
+        self._http_thread: Any | None = None
 
     def start_exporter(self) -> None:
-        if self._server_task is None:
-            loop = asyncio.get_running_loop()
-            self._server_task = loop.create_task(self._run_exporter())
+        """Start Prometheus HTTP metrics exporter.
 
-    async def _run_exporter(self) -> None:
-        try:
-            _LOGGER.info("Starting Prometheus metrics HTTP server", port=self._port, addr=self._addr)
-            loop = asyncio.get_running_loop()
-            # start_http_server is blocking, so run it in a thread executor
-            # We don't await completion because the server runs indefinitely
-            await loop.run_in_executor(None, self._start_server_blocking)
-        except Exception as exc:
-            _LOGGER.error(
-                "Failed to start Prometheus metrics HTTP server",
-                error=str(exc),
-                error_type=type(exc).__name__,
-                port=self._port,
-                addr=self._addr
-            )
-            raise
-
-    def _start_server_blocking(self) -> None:
-        """Blocking call to start the HTTP server - runs in executor thread."""
-        try:
-            _LOGGER.info("Calling prometheus_client.start_http_server", port=self._port, addr=self._addr)
-            # This call blocks indefinitely - it only returns if the server stops
-            start_http_server(self._port, self._addr, self._registry)
-            # We should never reach here unless the server stops
-            _LOGGER.warning("Prometheus metrics HTTP server stopped unexpectedly", port=self._port, addr=self._addr)
-        except Exception as exc:
-            _LOGGER.error(
-                "Exception in Prometheus HTTP server thread",
-                error=str(exc),
-                error_type=type(exc).__name__,
-                port=self._port,
-                addr=self._addr
-            )
-            raise
+        Note: start_http_server starts a daemon thread and returns immediately.
+        The thread will continue running until the process exits.
+        """
+        if self._http_server is None:
+            try:
+                _LOGGER.info("Starting Prometheus metrics HTTP server", port=self._port, addr=self._addr)
+                # start_http_server is non-blocking - it starts a daemon thread and returns immediately
+                # It returns (httpd, thread) tuple that we can use for cleanup if needed
+                self._http_server, self._http_thread = start_http_server(
+                    port=self._port,
+                    addr=self._addr,
+                    registry=self._registry
+                )
+                _LOGGER.info(
+                    "Prometheus metrics HTTP server started successfully",
+                    port=self._port,
+                    addr=self._addr
+                )
+            except Exception as exc:
+                _LOGGER.error(
+                    "Failed to start Prometheus metrics HTTP server",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    port=self._port,
+                    addr=self._addr
+                )
+                raise
 
     @contextlib.asynccontextmanager
     async def track_sample_latency(self) -> AsyncIterator[None]:
