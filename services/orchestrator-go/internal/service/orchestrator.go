@@ -105,6 +105,57 @@ func (o *Orchestrator) GetRun(ctx context.Context, runID string) (types.Run, err
 	return o.store.GetRun(ctx, runID)
 }
 
+// ListRunsForHealthCheck returns runs in the provided states that require heartbeat monitoring.
+// If no states are specified all runs are returned.
+func (o *Orchestrator) ListRunsForHealthCheck(ctx context.Context, states ...types.RunState) ([]types.Run, error) {
+	runs, err := o.store.ListRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(states) == 0 {
+		return runs, nil
+	}
+
+	stateSet := make(map[types.RunState]struct{}, len(states))
+	for _, state := range states {
+		stateSet[state] = struct{}{}
+	}
+
+	filtered := make([]types.Run, 0, len(runs))
+	for _, run := range runs {
+		if _, ok := stateSet[run.State]; ok {
+			filtered = append(filtered, run)
+		}
+	}
+
+	return filtered, nil
+}
+
+// UpdateRunHealth updates the health status (and optional status message) for a run.
+func (o *Orchestrator) UpdateRunHealth(ctx context.Context, runID string, health types.RunHealth, statusMessage string) (types.Run, error) {
+	run, err := o.store.GetRun(ctx, runID)
+	if err != nil {
+		return types.Run{}, err
+	}
+
+	if run.HealthStatus == health && (statusMessage == "" || statusMessage == run.StatusMessage) {
+		return run, nil
+	}
+
+	run.HealthStatus = health
+	if statusMessage != "" {
+		run.StatusMessage = statusMessage
+	}
+	run.UpdatedAt = o.now()
+
+	if err := o.store.UpdateRun(ctx, run); err != nil {
+		return types.Run{}, err
+	}
+
+	return run, nil
+}
+
 // ResetRun resets a run's progress to allow restarting from step 0.
 func (o *Orchestrator) ResetRun(ctx context.Context, runID string) (types.Run, error) {
 	run, err := o.store.GetRun(ctx, runID)

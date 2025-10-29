@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -66,31 +67,35 @@ func (m *Monitor) Start(ctx context.Context) {
 }
 
 func (m *Monitor) checkStaleHeartbeats(ctx context.Context) {
-	// This would require adding a method to the service to list runs
-	// that need health checking. For now, we'll outline the logic:
-
 	now := time.Now()
 	staleThreshold := now.Add(-m.config.HeartbeatStaleAfter)
 	unresponsiveThreshold := now.Add(-m.config.HeartbeatUnresponsive)
 
-	// TODO: Add ListRunsForHealthCheck to service layer
-	// runs, err := m.orch.ListRunsForHealthCheck(ctx, types.RunStateRunning)
+	runs, err := m.orch.ListRunsForHealthCheck(ctx, types.RunStateRunning)
+	if err != nil {
+		m.logger.Error().Err(err).Msg("Failed to list runs for health check")
+		return
+	}
 
 	m.logger.Debug().
 		Time("stale_threshold", staleThreshold).
 		Time("unresponsive_threshold", unresponsiveThreshold).
 		Msg("Checking run health")
 
-	// Example logic for what this would do:
-	// for _, run := range runs {
-	//     if run.LastHeartbeatAt != nil {
-	//         if run.LastHeartbeatAt.Before(unresponsiveThreshold) && run.HealthStatus != types.RunHealthUnresponsive {
-	//             m.markUnresponsive(ctx, run)
-	//         } else if run.LastHeartbeatAt.Before(staleThreshold) && run.HealthStatus == types.RunHealthHealthy {
-	//             m.markStale(ctx, run)
-	//         }
-	//     }
-	// }
+	for _, run := range runs {
+		if run.LastHeartbeatAt == nil {
+			continue
+		}
+
+		if run.LastHeartbeatAt.Before(unresponsiveThreshold) && run.HealthStatus != types.RunHealthUnresponsive {
+			m.markUnresponsive(ctx, run)
+			continue
+		}
+
+		if run.LastHeartbeatAt.Before(staleThreshold) && run.HealthStatus == types.RunHealthHealthy {
+			m.markStale(ctx, run)
+		}
+	}
 }
 
 func (m *Monitor) markStale(ctx context.Context, run types.Run) {
@@ -100,13 +105,17 @@ func (m *Monitor) markStale(ctx context.Context, run types.Run) {
 	}
 	logEvent.Msg("Marking run as stale")
 
+	updatedRun, err := m.orch.UpdateRunHealth(ctx, run.ID, types.RunHealthHeartbeatStale, "Heartbeat stale")
+	if err != nil {
+		m.logger.Error().Err(err).Str("run_id", run.ID).Msg("Failed to update run health to stale")
+		return
+	}
+
+	run = updatedRun
+
 	if m.metrics != nil {
 		m.metrics.RecordHealthEvent("heartbeat_stale", "warning")
 	}
-
-	// Update run health status
-	run.HealthStatus = types.RunHealthHeartbeatStale
-	// Would need UpdateRunHealth method in service
 
 	// Publish stale event
 	event := events.RunStatusEvent{
@@ -130,13 +139,18 @@ func (m *Monitor) markUnresponsive(ctx context.Context, run types.Run) {
 	}
 	logEvent.Msg("Marking run as unresponsive")
 
+	reason := fmt.Sprintf("Run unresponsive - no heartbeat for over %s", m.config.HeartbeatUnresponsive)
+	updatedRun, err := m.orch.UpdateRunHealth(ctx, run.ID, types.RunHealthUnresponsive, reason)
+	if err != nil {
+		m.logger.Error().Err(err).Str("run_id", run.ID).Msg("Failed to update run health to unresponsive")
+		return
+	}
+
+	run = updatedRun
+
 	if m.metrics != nil {
 		m.metrics.RecordHealthEvent("heartbeat_unresponsive", "critical")
 	}
-
-	// Update run health status
-	run.HealthStatus = types.RunHealthUnresponsive
-	// Would need UpdateRunHealth method in service
 
 	// Publish unresponsive event (triggers PagerDuty)
 	event := events.RunStatusEvent{
@@ -145,7 +159,7 @@ func (m *Monitor) markUnresponsive(ctx context.Context, run types.Run) {
 		RuntimeStatus: string(run.RuntimeStatus),
 		HealthStatus:  string(run.HealthStatus),
 		Step:          run.CurrentStep,
-		LastError:     "Run unresponsive - no heartbeat for over 2 minutes",
+		LastError:     reason,
 	}
 
 	if err := m.publisher.PublishRunStatus(ctx, event); err != nil {

@@ -24,6 +24,7 @@ type RunStore interface {
 	CreateRun(ctx context.Context, run types.Run) error
 	GetRun(ctx context.Context, id string) (types.Run, error)
 	UpdateRun(ctx context.Context, run types.Run) error
+	ListRuns(ctx context.Context) ([]types.Run, error)
 	AppendTransition(ctx context.Context, transition RunTransition) error
 	AppendCommand(ctx context.Context, command types.RunCommand) error
 	GetCommand(ctx context.Context, runID, commandID string) (types.RunCommand, error)
@@ -89,6 +90,23 @@ func (m *MemoryStore) UpdateRun(_ context.Context, run types.Run) error {
 	}
 	m.runs[run.ID] = run
 	return nil
+}
+
+// ListRuns returns a snapshot of all stored runs sorted by creation time.
+func (m *MemoryStore) ListRuns(_ context.Context) ([]types.Run, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	runs := make([]types.Run, 0, len(m.runs))
+	for _, run := range m.runs {
+		runs = append(runs, run)
+	}
+
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].CreatedAt.Before(runs[j].CreatedAt)
+	})
+
+	return runs, nil
 }
 
 // AppendTransition adds a state transition entry.
