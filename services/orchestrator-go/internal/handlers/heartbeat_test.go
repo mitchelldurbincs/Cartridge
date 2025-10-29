@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -43,8 +44,8 @@ func TestEnhancedHeartbeatHandler_HandleHeartbeat(t *testing.T) {
 
 	// Setup handler
 	publisher := events.NoopPublisher{}
-	logger := *zerolog.New(nil).Level(zerolog.Disabled)
-	handler := NewEnhancedHeartbeatHandler(store, publisher, logger)
+	logger := zerolog.New(io.Discard).Level(zerolog.Disabled)
+	handler := NewEnhancedHeartbeatHandler(store, publisher, *logger)
 
 	// Create request
 	requestBody := LearnerHeartbeatRequest{
