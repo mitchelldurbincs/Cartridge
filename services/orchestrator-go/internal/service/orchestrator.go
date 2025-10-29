@@ -105,6 +105,31 @@ func (o *Orchestrator) GetRun(ctx context.Context, runID string) (types.Run, err
 	return o.store.GetRun(ctx, runID)
 }
 
+// ListRunsForHealthCheck returns all runs that need health monitoring.
+func (o *Orchestrator) ListRunsForHealthCheck(ctx context.Context, state types.RunState) ([]types.Run, error) {
+	return o.store.ListRunsByState(ctx, state)
+}
+
+// UpdateRunHealth updates the health status of a run.
+func (o *Orchestrator) UpdateRunHealth(ctx context.Context, runID string, health types.RunHealth, statusMessage string) (types.Run, error) {
+	run, err := o.store.GetRun(ctx, runID)
+	if err != nil {
+		return types.Run{}, err
+	}
+
+	run.HealthStatus = health
+	if statusMessage != "" {
+		run.StatusMessage = statusMessage
+	}
+	run.UpdatedAt = o.now()
+
+	if err := o.store.UpdateRun(ctx, run); err != nil {
+		return types.Run{}, err
+	}
+
+	return run, nil
+}
+
 // ResetRun resets a run's progress to allow restarting from step 0.
 func (o *Orchestrator) ResetRun(ctx context.Context, runID string) (types.Run, error) {
 	run, err := o.store.GetRun(ctx, runID)

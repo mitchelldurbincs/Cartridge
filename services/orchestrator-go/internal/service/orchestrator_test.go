@@ -20,6 +20,7 @@ type stubRunStore struct {
 	createRunFn          func(context.Context, types.Run) error
 	getRunFn             func(context.Context, string) (types.Run, error)
 	updateRunFn          func(context.Context, types.Run) error
+	listRunsByStateFn    func(context.Context, types.RunState) ([]types.Run, error)
 	appendTransitionFn   func(context.Context, storage.RunTransition) error
 	appendCommandFn      func(context.Context, types.RunCommand) error
 	getCommandFn         func(context.Context, string, string) (types.RunCommand, error)
@@ -46,6 +47,13 @@ func (s *stubRunStore) UpdateRun(ctx context.Context, run types.Run) error {
 		return s.updateRunFn(ctx, run)
 	}
 	return nil
+}
+
+func (s *stubRunStore) ListRunsByState(ctx context.Context, state types.RunState) ([]types.Run, error) {
+	if s.listRunsByStateFn != nil {
+		return s.listRunsByStateFn(ctx, state)
+	}
+	return []types.Run{}, nil
 }
 
 func (s *stubRunStore) AppendTransition(ctx context.Context, transition storage.RunTransition) error {

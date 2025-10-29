@@ -24,6 +24,7 @@ type RunStore interface {
 	CreateRun(ctx context.Context, run types.Run) error
 	GetRun(ctx context.Context, id string) (types.Run, error)
 	UpdateRun(ctx context.Context, run types.Run) error
+	ListRunsByState(ctx context.Context, state types.RunState) ([]types.Run, error)
 	AppendTransition(ctx context.Context, transition RunTransition) error
 	AppendCommand(ctx context.Context, command types.RunCommand) error
 	GetCommand(ctx context.Context, runID, commandID string) (types.RunCommand, error)
@@ -89,6 +90,19 @@ func (m *MemoryStore) UpdateRun(_ context.Context, run types.Run) error {
 	}
 	m.runs[run.ID] = run
 	return nil
+}
+
+// ListRunsByState returns all runs matching the specified state.
+func (m *MemoryStore) ListRunsByState(_ context.Context, state types.RunState) ([]types.Run, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var runs []types.Run
+	for _, run := range m.runs {
+		if run.State == state {
+			runs = append(runs, run)
+		}
+	}
+	return runs, nil
 }
 
 // AppendTransition adds a state transition entry.
