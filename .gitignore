@@ -21,6 +21,9 @@
 **/bin/
 **/pkg/
 **/vendor/
+# Go binaries built at module root
+**/orchestrator-go/orchestrator
+**/replay-go/replay-server
 
 # Go workspace
 go.work
