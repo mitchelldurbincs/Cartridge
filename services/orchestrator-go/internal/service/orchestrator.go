@@ -162,8 +162,6 @@ func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payloa
 		}
 	}
 	run = run.MergeHeartbeat(payload, now)
-	run.HealthStatus = types.RunHealthHealthy
-	run.UpdatedAt = now
 	if err := o.store.UpdateRun(ctx, run); err != nil {
 		return types.Run{}, err
 	}
