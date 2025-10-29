@@ -53,4 +53,51 @@ func TestRunCommandValidateTuneMissingPayload(t *testing.T) {
 	}
 }
 
+func TestRunMergeHeartbeatUpdatesDerivedFields(t *testing.T) {
+	receivedAt := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+	run := Run{State: RunStateQueued, UpdatedAt: time.Time{}}
+	payload := HeartbeatPayload{
+		RunID:             "run-1",
+		Status:            RuntimeStatusRunning,
+		Step:              10,
+		SamplesPerSecond:  50.5,
+		Loss:              0.42,
+		CheckpointVersion: 3,
+	}
+
+	updated := run.MergeHeartbeat(payload, receivedAt)
+
+	if updated.UpdatedAt != receivedAt {
+		t.Fatalf("expected UpdatedAt to be %v, got %v", receivedAt, updated.UpdatedAt)
+	}
+	if updated.State != RunStateRunning {
+		t.Fatalf("expected state to transition to running, got %s", updated.State)
+	}
+	if updated.HealthStatus != RunHealthHealthy {
+		t.Fatalf("expected health to be marked healthy, got %s", updated.HealthStatus)
+	}
+	if updated.LastHeartbeatAt == nil || !updated.LastHeartbeatAt.Equal(receivedAt) {
+		t.Fatalf("expected last heartbeat to be %v, got %v", receivedAt, updated.LastHeartbeatAt)
+	}
+}
+
+func TestRunMergeHeartbeatPreservesTerminalState(t *testing.T) {
+	receivedAt := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+	run := Run{State: RunStateCompleted}
+	payload := HeartbeatPayload{
+		RunID:             "run-1",
+		Status:            RuntimeStatusRunning,
+		Step:              10,
+		SamplesPerSecond:  50.5,
+		Loss:              0.42,
+		CheckpointVersion: 3,
+	}
+
+	updated := run.MergeHeartbeat(payload, receivedAt)
+
+	if updated.State != RunStateCompleted {
+		t.Fatalf("expected terminal state to be preserved, got %s", updated.State)
+	}
+}
+
 func floatPtr(v float64) *float64 { return &v }

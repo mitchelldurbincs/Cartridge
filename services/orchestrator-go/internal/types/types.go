@@ -219,5 +219,36 @@ func (r Run) MergeHeartbeat(h HeartbeatPayload, receivedAt time.Time) Run {
 	r.SamplesPerSecond = h.SamplesPerSecond
 	r.Loss = h.Loss
 	r.CheckpointVersion = h.CheckpointVersion
+	r.HealthStatus = RunHealthHealthy
+	r.UpdatedAt = receivedAt
+
+	if nextState, ok := mapRuntimeStatusToRunState(h.Status); ok && !isTerminalState(r.State) {
+		r.State = nextState
+	}
+
 	return r
+}
+
+func mapRuntimeStatusToRunState(status RuntimeStatus) (RunState, bool) {
+	switch status {
+	case RuntimeStatusRunning:
+		return RunStateRunning, true
+	case RuntimeStatusPaused:
+		return RunStatePaused, true
+	case RuntimeStatusTerminating:
+		return RunStateTerminating, true
+	case RuntimeStatusErrored:
+		return RunStateErrored, true
+	default:
+		return "", false
+	}
+}
+
+func isTerminalState(state RunState) bool {
+	switch state {
+	case RunStateCompleted, RunStateFailed, RunStateTerminated:
+		return true
+	default:
+		return false
+	}
 }
