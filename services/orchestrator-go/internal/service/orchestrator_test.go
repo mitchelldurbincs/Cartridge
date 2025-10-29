@@ -20,6 +20,7 @@ type stubRunStore struct {
 	createRunFn          func(context.Context, types.Run) error
 	getRunFn             func(context.Context, string) (types.Run, error)
 	updateRunFn          func(context.Context, types.Run) error
+	listRunsFn           func(context.Context) ([]types.Run, error)
 	appendTransitionFn   func(context.Context, storage.RunTransition) error
 	appendCommandFn      func(context.Context, types.RunCommand) error
 	getCommandFn         func(context.Context, string, string) (types.RunCommand, error)
@@ -46,6 +47,13 @@ func (s *stubRunStore) UpdateRun(ctx context.Context, run types.Run) error {
 		return s.updateRunFn(ctx, run)
 	}
 	return nil
+}
+
+func (s *stubRunStore) ListRuns(ctx context.Context) ([]types.Run, error) {
+	if s.listRunsFn != nil {
+		return s.listRunsFn(ctx)
+	}
+	return nil, nil
 }
 
 func (s *stubRunStore) AppendTransition(ctx context.Context, transition storage.RunTransition) error {
@@ -433,5 +441,67 @@ func TestAckCommandMarksAcknowledgedAndPublishesEvent(t *testing.T) {
 	}
 	if len(publisher.commandEvents) != 1 || publisher.commandEvents[0].Event != "acknowledged" {
 		t.Fatalf("expected acknowledged event to be published")
+	}
+}
+
+func TestListRunsForHealthCheckFiltersStates(t *testing.T) {
+	running := types.Run{ID: "run-running", State: types.RunStateRunning}
+	completed := types.Run{ID: "run-completed", State: types.RunStateCompleted}
+	store := &stubRunStore{
+		listRunsFn: func(ctx context.Context) ([]types.Run, error) {
+			return []types.Run{running, completed}, nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	runs, err := orch.ListRunsForHealthCheck(context.Background(), types.RunStateRunning)
+	if err != nil {
+		t.Fatalf("ListRunsForHealthCheck returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != running.ID {
+		t.Fatalf("expected only running run to be returned, got %#v", runs)
+	}
+
+	allRuns, err := orch.ListRunsForHealthCheck(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunsForHealthCheck with no filter returned error: %v", err)
+	}
+	if len(allRuns) != 2 {
+		t.Fatalf("expected all runs to be returned when no filter provided")
+	}
+}
+
+func TestUpdateRunHealthPersistsChanges(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	stored := types.Run{ID: "run-1", HealthStatus: types.RunHealthHealthy, StatusMessage: "ok"}
+	var saved types.Run
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return stored, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			saved = run
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	updated, err := orch.UpdateRunHealth(context.Background(), stored.ID, types.RunHealthUnresponsive, "no heartbeat")
+	if err != nil {
+		t.Fatalf("UpdateRunHealth returned error: %v", err)
+	}
+	if saved.HealthStatus != types.RunHealthUnresponsive {
+		t.Fatalf("expected run health to be updated, got %s", saved.HealthStatus)
+	}
+	if saved.StatusMessage != "no heartbeat" {
+		t.Fatalf("expected status message to be updated, got %q", saved.StatusMessage)
+	}
+	if saved.UpdatedAt != now {
+		t.Fatalf("expected updated timestamp to be set to now")
+	}
+	if updated.HealthStatus != types.RunHealthUnresponsive {
+		t.Fatalf("expected updated run to reflect new health status")
 	}
 }

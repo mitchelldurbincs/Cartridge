@@ -80,9 +80,9 @@ func (p *PostgresStore) GetRun(ctx context.Context, id string) (types.Run, error
 
 func (p *PostgresStore) UpdateRun(ctx context.Context, run types.Run) error {
 	query := `
-		UPDATE runs SET
-			state = $2, status_message = $3, last_heartbeat_at = $4,
-			runtime_status = $5, health_status = $6, current_step = $7,
+                UPDATE runs SET
+                        state = $2, status_message = $3, last_heartbeat_at = $4,
+                        runtime_status = $5, health_status = $6, current_step = $7,
 			samples_per_sec = $8, loss = $9, checkpoint_version = $10,
 			started_at = $11, ended_at = $12, updated_at = $13
 		WHERE id = $1`
@@ -114,4 +114,44 @@ func isUniqueViolation(err error) bool {
 	// This would check the PostgreSQL error code for unique constraint violations
 	// Implementation depends on the specific PostgreSQL driver being used
 	return false // Simplified for now
+}
+
+func (p *PostgresStore) ListRuns(ctx context.Context) ([]types.Run, error) {
+	query := `
+                SELECT id, experiment_id, version_id, state, status_message, priority,
+                           launch_manifest, overrides, last_heartbeat_at, runtime_status,
+                           health_status, current_step, samples_per_sec, loss, checkpoint_version,
+                           started_at, ended_at, created_by, created_at, updated_at
+                FROM runs`
+
+	rows, err := p.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []types.Run
+	for rows.Next() {
+		var run types.Run
+		var launchManifest, overrides []byte
+		if err := rows.Scan(
+			&run.ID, &run.ExperimentID, &run.VersionID, &run.State, &run.StatusMessage,
+			&run.Priority, &launchManifest, &overrides, &run.LastHeartbeatAt,
+			&run.RuntimeStatus, &run.HealthStatus, &run.CurrentStep,
+			&run.SamplesPerSecond, &run.Loss, &run.CheckpointVersion,
+			&run.StartedAt, &run.EndedAt, &run.CreatedBy, &run.CreatedAt, &run.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan run: %w", err)
+		}
+
+		run.LaunchManifest = json.RawMessage(launchManifest)
+		run.Overrides = json.RawMessage(overrides)
+		runs = append(runs, run)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate runs: %w", err)
+	}
+
+	return runs, nil
 }
