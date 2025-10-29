@@ -2,7 +2,11 @@ services:
   engine:
     build:
       context: ../..
-      dockerfile: services/engine-rust/Dockerfile
+      dockerfile: dockerfiles/rust.Dockerfile
+      args:
+        SERVICE_NAME: engine-rust
+        BINARY_NAME: engine-server
+        USER_NAME: engine
     image: cartridge/engine-rust:local
     environment:
       ENGINE_SERVER_ADDR: 0.0.0.0:50051
@@ -46,7 +50,11 @@ services:
   orchestrator:
     build:
       context: ../..
-      dockerfile: services/orchestrator-go/Dockerfile
+      dockerfile: dockerfiles/go.Dockerfile
+      args:
+        SERVICE_NAME: orchestrator-go
+        BINARY_NAME: orchestrator
+        BUILD_HEALTHCHECK: "true"
     image: cartridge/orchestrator-go:local
     environment:
       HOST: 0.0.0.0
@@ -79,7 +87,11 @@ services:
   weights:
     build:
       context: ../..
-      dockerfile: services/weights-go/Dockerfile
+      dockerfile: dockerfiles/go.Dockerfile
+      args:
+        SERVICE_NAME: weights-go
+        BINARY_NAME: weights
+        BUILD_HEALTHCHECK: "false"
     image: cartridge/weights-go:local
     environment:
       WEIGHTS_REDIS_ENABLED: "true"
@@ -147,7 +159,11 @@ services:
   actor:
     build:
       context: ../..
-      dockerfile: services/actor-rust/Dockerfile
+      dockerfile: dockerfiles/rust.Dockerfile
+      args:
+        SERVICE_NAME: actor-rust
+        BINARY_NAME: actor
+        USER_NAME: actor
     image: cartridge/actor-rust:local
     environment:
       ACTOR_ENGINE_ADDR: http://engine:50051
