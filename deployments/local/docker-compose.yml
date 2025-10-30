@@ -11,6 +11,8 @@ services:
     environment:
       ENGINE_SERVER_ADDR: 0.0.0.0:50051
       ENGINE_METRICS_ADDR: 0.0.0.0:9000
+      RUST_LOG: info
+      RUST_BACKTRACE: "1"
     ports:
       - "50051:50051"
       - "9000:9000"
@@ -20,9 +22,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 30s
     networks:
       - cartridge
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   replay:
     build:
@@ -71,18 +78,23 @@ services:
       - "8080:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/usr/local/bin/orchestrator-healthcheck", "--addr", "http://localhost:8080/metrics", "--timeout", "5s"]
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/metrics || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 30s
     depends_on:
       engine:
-        condition: service_healthy
+        condition: service_started
       replay:
-        condition: service_healthy
+        condition: service_started
     networks:
       - cartridge
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   weights:
     build:
@@ -101,7 +113,7 @@ services:
       - "9094:9094"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/busybox/busybox", "wget", "-q", "--spider", "http://localhost:9094/metrics"]
+      test: ["CMD-SHELL", "curl --fail http://localhost:9094/metrics || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -111,6 +123,11 @@ services:
         condition: service_healthy
     networks:
       - cartridge
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine

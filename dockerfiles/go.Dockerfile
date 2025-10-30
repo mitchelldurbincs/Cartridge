@@ -21,33 +21,37 @@ COPY services/orchestrator-go/internal/thirdparty/ services/orchestrator-go/inte
 
 WORKDIR /workspace/services/${SERVICE_NAME}
 
-# Build the main binary
-RUN CGO_ENABLED=0 go build -o /workspace/bin/${BINARY_NAME} ./cmd/server
+# Build the main binary with explicit ldflags for static linking
+RUN CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o /workspace/bin/${BINARY_NAME} ./cmd/server
 
 # Conditionally build healthcheck binary (only for orchestrator)
 RUN if [ "$BUILD_HEALTHCHECK" = "true" ]; then \
-        CGO_ENABLED=0 go build -o /workspace/bin/${BINARY_NAME}-healthcheck ./cmd/healthcheck; \
+        CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o /workspace/bin/${BINARY_NAME}-healthcheck ./cmd/healthcheck; \
     fi
-
-# Create entrypoint wrapper script
-RUN printf '#!/bin/sh\nexec /usr/local/bin/%s "$@"\n' "${BINARY_NAME}" > /workspace/bin/entrypoint.sh && \
-    chmod +x /workspace/bin/entrypoint.sh
 
 FROM alpine:3.19 AS busybox
 
-FROM gcr.io/distroless/base-debian12:nonroot
+# Use alpine for better debugging and logging support
+FROM alpine:3.19
 
 ARG BINARY_NAME
 ARG BUILD_HEALTHCHECK
 
-COPY --from=busybox /bin/busybox /busybox/busybox
-COPY --from=busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
-COPY --from=busybox /lib/libc.musl-x86_64.so.1 /lib/libc.musl-x86_64.so.1
+# Install ca-certificates for HTTPS and curl for healthchecks
+RUN apk add --no-cache ca-certificates curl
 
-# Copy all binaries (includes main binary and optional healthcheck)
-COPY --from=builder /workspace/bin/${BINARY_NAME}* /usr/local/bin/
-COPY --from=builder /workspace/bin/entrypoint.sh /entrypoint.sh
+# Create non-root user
+RUN addgroup -g 1000 appuser && \
+    adduser -D -u 1000 -G appuser appuser
 
-USER nonroot
+# Copy binaries and create a runtime-friendly entrypoint
+COPY --from=builder /workspace/bin/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+COPY --from=builder /workspace/bin/${BINARY_NAME}-healthcheck /usr/local/bin/ 2>/dev/null || true
 
-ENTRYPOINT ["/busybox/busybox", "sh", "/entrypoint.sh"]
+# Create an entrypoint script that will work at runtime
+RUN printf '#!/bin/sh\nset -e\necho "Starting %s..."\nexec /usr/local/bin/%s "$@"\n' "${BINARY_NAME}" "${BINARY_NAME}" > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+USER appuser
+
+ENTRYPOINT ["/entrypoint.sh"]

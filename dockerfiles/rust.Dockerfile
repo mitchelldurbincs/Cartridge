@@ -72,8 +72,8 @@ COPY --from=builder /workspace/services/${SERVICE_NAME}/target/release/${BINARY_
 # Create non-root user
 RUN useradd -r -u 1000 ${USER_NAME}
 
-# Create wrapper script to launch the binary (ARGs not available at runtime)
-RUN echo "#!/bin/sh\nexec /usr/local/bin/${BINARY_NAME} \"\$@\"" > /entrypoint.sh && \
+# Create wrapper script with better logging (ARGs not available at runtime)
+RUN printf '#!/bin/sh\nset -e\necho "Starting %s..."\nexec /usr/local/bin/%s "$@"\n' "${BINARY_NAME}" "${BINARY_NAME}" > /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
 USER ${USER_NAME}
