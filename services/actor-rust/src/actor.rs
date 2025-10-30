@@ -370,7 +370,7 @@ impl Actor {
         debug!("Flushing {} transitions to replay service", count);
 
         let request = Request::new(StoreBatchRequest {
-            transitions: transitions.clone(),
+            transitions,  // Move ownership instead of cloning
         });
 
         match self.replay_client.clone().store_batch(request).await {
@@ -406,26 +406,24 @@ impl Actor {
                 Ok(())
             }
             Err(e) => {
+                // Don't restore transitions to buffer - they're already moved
+                // Error recovery by buffering would cause memory buildup if replay is down
+                // Better to fail fast and let actor generate fresh transitions
                 counter!(
                     "actor_flush_results_total",
                     1,
                     "result" => "error",
                     "env_id" => self.config.env_id.clone()
                 );
-                let mut buffer = self.transition_buffer.lock().unwrap();
-                buffer.splice(0..0, transitions.into_iter());
-                let buffer_len = buffer.len();
-                drop(buffer);
                 gauge!(
                     "actor_transitions_buffered",
-                    buffer_len as f64,
+                    0.0,
                     "env_id" => self.config.env_id.clone()
                 );
                 error!(
                     error = %e,
                     transitions = count,
-                    buffer_len,
-                    "Failed to store batch in replay"
+                    "Failed to store batch in replay - transitions dropped"
                 );
                 Err(anyhow!("Failed to store batch: {}", e))
             }
