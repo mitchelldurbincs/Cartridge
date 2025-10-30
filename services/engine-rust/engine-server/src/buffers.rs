@@ -7,6 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use metrics::{counter, gauge};
 
+/// Maximum buffer capacity before shrinking on return to pool (1 MB)
+///
+/// Buffers exceeding this capacity will be shrunk to prevent memory leaks
+/// from one-off large allocations permanently inflating the pool.
+const MAX_BUFFER_CAPACITY: usize = 1024 * 1024;
+
 /// Thread-safe buffer pool for reusing byte vectors
 ///
 /// The buffer pool maintains separate pools for different types of buffers
@@ -92,9 +98,17 @@ impl BufferPool {
 
     /// Return a state buffer to the pool
     ///
-    /// The buffer is cleared before being returned to the pool.
+    /// The buffer is cleared before being returned to the pool. If the buffer's
+    /// capacity exceeds MAX_BUFFER_CAPACITY, it will be shrunk to prevent memory leaks.
     pub fn return_state_buffer(&self, mut buf: Vec<u8>) {
         buf.clear();
+
+        // Shrink oversized buffers to prevent memory leaks from large allocations
+        if buf.capacity() > MAX_BUFFER_CAPACITY {
+            buf.shrink_to(MAX_BUFFER_CAPACITY);
+            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "state");
+        }
+
         let mut buffers = self.state_buffers.lock().unwrap();
         buffers.push(buf);
         counter!("engine_buffer_pool_returns_total", 1, "buffer" => "state");
@@ -119,8 +133,18 @@ impl BufferPool {
     }
 
     /// Return an observation buffer to the pool
+    ///
+    /// The buffer is cleared before being returned to the pool. If the buffer's
+    /// capacity exceeds MAX_BUFFER_CAPACITY, it will be shrunk to prevent memory leaks.
     pub fn return_obs_buffer(&self, mut buf: Vec<u8>) {
         buf.clear();
+
+        // Shrink oversized buffers to prevent memory leaks from large allocations
+        if buf.capacity() > MAX_BUFFER_CAPACITY {
+            buf.shrink_to(MAX_BUFFER_CAPACITY);
+            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "obs");
+        }
+
         let mut buffers = self.obs_buffers.lock().unwrap();
         buffers.push(buf);
         counter!("engine_buffer_pool_returns_total", 1, "buffer" => "obs");
@@ -145,8 +169,18 @@ impl BufferPool {
     }
 
     /// Return an action buffer to the pool
+    ///
+    /// The buffer is cleared before being returned to the pool. If the buffer's
+    /// capacity exceeds MAX_BUFFER_CAPACITY, it will be shrunk to prevent memory leaks.
     pub fn return_action_buffer(&self, mut buf: Vec<u8>) {
         buf.clear();
+
+        // Shrink oversized buffers to prevent memory leaks from large allocations
+        if buf.capacity() > MAX_BUFFER_CAPACITY {
+            buf.shrink_to(MAX_BUFFER_CAPACITY);
+            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "action");
+        }
+
         let mut buffers = self.action_buffers.lock().unwrap();
         buffers.push(buf);
         counter!("engine_buffer_pool_returns_total", 1, "buffer" => "action");
@@ -647,5 +681,173 @@ mod tests {
         assert!(stats.available_state_buffers >= 10);
         assert!(stats.available_obs_buffers >= 10);
         assert!(stats.available_action_buffers >= 10);
+    }
+
+    // Tests for buffer capacity management and memory leak prevention
+
+    #[test]
+    fn test_oversized_state_buffer_shrinks() {
+        let pool = BufferPool::new();
+
+        // Create a buffer with capacity exceeding MAX_BUFFER_CAPACITY
+        let mut buf = Vec::with_capacity(MAX_BUFFER_CAPACITY + 1024 * 1024);
+        buf.extend_from_slice(&vec![0u8; 100]); // Add some data
+
+        let capacity_before = buf.capacity();
+        assert!(capacity_before > MAX_BUFFER_CAPACITY);
+
+        // Return to pool - should shrink
+        pool.return_state_buffer(buf);
+
+        // Get it back and check capacity
+        let buf_returned = pool.get_state_buffer();
+        assert!(buf_returned.capacity() <= MAX_BUFFER_CAPACITY);
+        assert_eq!(buf_returned.len(), 0); // Should be cleared
+    }
+
+    #[test]
+    fn test_normal_sized_state_buffer_not_shrunk() {
+        let pool = BufferPool::new();
+
+        // Create a buffer within the capacity limit
+        let mut buf = Vec::with_capacity(1024);
+        buf.extend_from_slice(&vec![0u8; 512]);
+
+        let capacity_before = buf.capacity();
+        assert!(capacity_before <= MAX_BUFFER_CAPACITY);
+
+        // Return to pool - should not shrink
+        pool.return_state_buffer(buf);
+
+        // Get it back and check capacity is preserved
+        let buf_returned = pool.get_state_buffer();
+        assert_eq!(buf_returned.capacity(), capacity_before);
+        assert_eq!(buf_returned.len(), 0);
+    }
+
+    #[test]
+    fn test_oversized_obs_buffer_shrinks() {
+        let pool = BufferPool::new();
+
+        // Create a buffer with capacity exceeding MAX_BUFFER_CAPACITY
+        let mut buf = Vec::with_capacity(MAX_BUFFER_CAPACITY + 512 * 1024);
+        buf.extend_from_slice(&vec![1u8; 200]);
+
+        assert!(buf.capacity() > MAX_BUFFER_CAPACITY);
+
+        // Return to pool - should shrink
+        pool.return_obs_buffer(buf);
+
+        // Get it back and check capacity
+        let buf_returned = pool.get_obs_buffer();
+        assert!(buf_returned.capacity() <= MAX_BUFFER_CAPACITY);
+        assert_eq!(buf_returned.len(), 0);
+    }
+
+    #[test]
+    fn test_oversized_action_buffer_shrinks() {
+        let pool = BufferPool::new();
+
+        // Create a buffer with capacity exceeding MAX_BUFFER_CAPACITY
+        let mut buf = Vec::with_capacity(MAX_BUFFER_CAPACITY + 256 * 1024);
+        buf.extend_from_slice(&vec![2u8; 150]);
+
+        assert!(buf.capacity() > MAX_BUFFER_CAPACITY);
+
+        // Return to pool - should shrink
+        pool.return_action_buffer(buf);
+
+        // Get it back and check capacity
+        let buf_returned = pool.get_action_buffer();
+        assert!(buf_returned.capacity() <= MAX_BUFFER_CAPACITY);
+        assert_eq!(buf_returned.len(), 0);
+    }
+
+    #[test]
+    fn test_multiple_oversized_buffers_all_shrink() {
+        let pool = BufferPool::new();
+
+        // Create and return multiple oversized buffers
+        for i in 0..5 {
+            let mut buf = Vec::with_capacity(MAX_BUFFER_CAPACITY + (i + 1) * 1024 * 1024);
+            buf.extend_from_slice(&vec![i as u8; 100]);
+            pool.return_state_buffer(buf);
+        }
+
+        // Get them all back - all should be shrunk
+        for _ in 0..5 {
+            let buf = pool.get_state_buffer();
+            assert!(buf.capacity() <= MAX_BUFFER_CAPACITY);
+            assert_eq!(buf.len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_buffer_at_exact_capacity_limit() {
+        let pool = BufferPool::new();
+
+        // Create buffer exactly at the limit
+        let buf = Vec::with_capacity(MAX_BUFFER_CAPACITY);
+        let capacity = buf.capacity();
+
+        pool.return_state_buffer(buf);
+
+        let buf_returned = pool.get_state_buffer();
+        // Should not shrink since it's at the limit
+        assert_eq!(buf_returned.capacity(), capacity);
+    }
+
+    #[test]
+    fn test_buffer_slightly_over_limit_shrinks() {
+        let pool = BufferPool::new();
+
+        // Create buffer just slightly over the limit
+        let mut buf = Vec::with_capacity(MAX_BUFFER_CAPACITY + 1);
+
+        pool.return_state_buffer(buf);
+
+        let buf_returned = pool.get_state_buffer();
+        // Should shrink to the limit
+        assert!(buf_returned.capacity() <= MAX_BUFFER_CAPACITY);
+    }
+
+    #[test]
+    fn test_concurrent_oversized_buffer_shrinking() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pool = Arc::new(BufferPool::new());
+        let num_threads = 4;
+        let mut handles = Vec::new();
+
+        for thread_id in 0..num_threads {
+            let pool_clone = Arc::clone(&pool);
+
+            let handle = thread::spawn(move || {
+                // Each thread creates oversized buffers
+                for i in 0..10 {
+                    let mut buf = Vec::with_capacity(
+                        MAX_BUFFER_CAPACITY + (thread_id + 1) * 100 * 1024 + i * 1024,
+                    );
+                    buf.extend_from_slice(&vec![thread_id as u8; 50]);
+                    pool_clone.return_state_buffer(buf);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All returned buffers should be shrunk
+        for _ in 0..40 {
+            let buf = pool.get_state_buffer();
+            if buf.capacity() > 0 {
+                // Only check buffers that were actually returned
+                assert!(buf.capacity() <= MAX_BUFFER_CAPACITY);
+            }
+        }
     }
 }
