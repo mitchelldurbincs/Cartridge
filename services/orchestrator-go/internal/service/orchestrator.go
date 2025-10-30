@@ -244,10 +244,58 @@ func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payloa
 			latency = 0
 		}
 	}
+
+	// Determine if state transition is needed before merging heartbeat
+	oldState := run.State
+	newState := o.computeNextState(run.State, payload)
+
 	run = run.MergeHeartbeat(payload, now)
+
+	// Apply state transition if needed
+	if newState != oldState {
+		run.State = newState
+
+		// Set StartedAt when transitioning to running
+		if newState == types.RunStateRunning && run.StartedAt == nil {
+			run.StartedAt = &now
+		}
+
+		// Set EndedAt when transitioning to terminal states
+		if newState == types.RunStateCompleted || newState == types.RunStateFailed ||
+			newState == types.RunStateErrored || newState == types.RunStateTerminated {
+			run.EndedAt = &now
+		}
+
+		o.logger.Info().
+			Str("run_id", runID).
+			Str("from_state", string(oldState)).
+			Str("to_state", string(newState)).
+			Int64("step", payload.Step).
+			Str("runtime_status", string(payload.Status)).
+			Msg("run state transition")
+	}
+
 	if err := o.store.UpdateRun(ctx, run); err != nil {
 		return types.Run{}, err
 	}
+
+	// Record state transition after successful run update
+	if newState != oldState {
+		transition := storage.RunTransition{
+			RunID:     run.ID,
+			FromState: oldState,
+			ToState:   newState,
+			ChangedBy: "heartbeat",
+			Reason:    o.transitionReason(oldState, newState, payload),
+			CreatedAt: now,
+		}
+		if err := o.store.AppendTransition(ctx, transition); err != nil {
+			o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to record transition")
+		} else if o.metrics != nil {
+			o.metrics.RecordRunStateTransition(string(oldState), string(newState))
+		}
+	}
+
 	if o.metrics != nil {
 		o.metrics.ObserveHeartbeatLatency(latency)
 	}
@@ -264,6 +312,53 @@ func (o *Orchestrator) HandleHeartbeat(ctx context.Context, runID string, payloa
 		o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to publish run status event")
 	}
 	return run, nil
+}
+
+// computeNextState determines the appropriate state transition based on current state and heartbeat payload.
+func (o *Orchestrator) computeNextState(currentState types.RunState, payload types.HeartbeatPayload) types.RunState {
+	// Transition from queued to running when steps advance
+	if currentState == types.RunStateQueued && payload.Step > 0 && payload.Status == types.RuntimeStatusRunning {
+		return types.RunStateRunning
+	}
+
+	// Handle runtime status-driven state transitions
+	switch currentState {
+	case types.RunStateRunning:
+		switch payload.Status {
+		case types.RuntimeStatusPaused:
+			return types.RunStatePaused
+		case types.RuntimeStatusTerminating:
+			return types.RunStateTerminating
+		case types.RuntimeStatusErrored:
+			return types.RunStateErrored
+		}
+	case types.RunStatePaused:
+		if payload.Status == types.RuntimeStatusRunning {
+			return types.RunStateRunning
+		}
+	}
+
+	return currentState
+}
+
+// transitionReason generates a human-readable reason for state transitions.
+func (o *Orchestrator) transitionReason(fromState, toState types.RunState, payload types.HeartbeatPayload) string {
+	if fromState == types.RunStateQueued && toState == types.RunStateRunning {
+		return "first step reported via heartbeat"
+	}
+	if toState == types.RunStatePaused {
+		return "learner reported paused status"
+	}
+	if toState == types.RunStateTerminating {
+		return "learner reported terminating status"
+	}
+	if toState == types.RunStateErrored {
+		return "learner reported errored status"
+	}
+	if fromState == types.RunStatePaused && toState == types.RunStateRunning {
+		return "learner resumed from paused"
+	}
+	return "heartbeat-driven transition"
 }
 
 // CreateCommand validates and persists a control command.

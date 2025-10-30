@@ -505,3 +505,327 @@ func TestUpdateRunHealthPersistsChanges(t *testing.T) {
 		t.Fatalf("expected updated run to reflect new health status")
 	}
 }
+
+func TestHandleHeartbeatTransitionsQueuedToRunning(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:    "run-1",
+		State: types.RunStateQueued,
+	}
+	var recordedTransition storage.RunTransition
+	reg := prometheus.NewRegistry()
+	collector := metrics.NewCollector(reg)
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			recordedTransition = transition
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithMetrics(collector)
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusRunning,
+		Step:   1,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStateRunning {
+		t.Fatalf("expected state to transition to running, got %s", run.State)
+	}
+	if run.StartedAt == nil {
+		t.Fatalf("expected StartedAt to be set")
+	}
+	if !run.StartedAt.Equal(now) {
+		t.Fatalf("expected StartedAt to be %v, got %v", now, run.StartedAt)
+	}
+	if recordedTransition.FromState != types.RunStateQueued {
+		t.Fatalf("expected transition from queued, got %s", recordedTransition.FromState)
+	}
+	if recordedTransition.ToState != types.RunStateRunning {
+		t.Fatalf("expected transition to running, got %s", recordedTransition.ToState)
+	}
+	if recordedTransition.Reason != "first step reported via heartbeat" {
+		t.Fatalf("unexpected transition reason: %s", recordedTransition.Reason)
+	}
+
+	// Verify metrics were recorded
+	metricFamilies, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	var foundStateTransition bool
+	for _, mf := range metricFamilies {
+		if mf.Name == "orchestrator_run_state_transitions_total" {
+			foundStateTransition = true
+			break
+		}
+	}
+	if !foundStateTransition {
+		t.Fatalf("expected state transition metric to be recorded")
+	}
+}
+
+func TestHandleHeartbeatTransitionsRunningToPaused(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:          "run-1",
+		State:       types.RunStateRunning,
+		CurrentStep: 10,
+	}
+	var recordedTransition storage.RunTransition
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			recordedTransition = transition
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusPaused,
+		Step:   10,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStatePaused {
+		t.Fatalf("expected state to transition to paused, got %s", run.State)
+	}
+	if recordedTransition.FromState != types.RunStateRunning {
+		t.Fatalf("expected transition from running, got %s", recordedTransition.FromState)
+	}
+	if recordedTransition.ToState != types.RunStatePaused {
+		t.Fatalf("expected transition to paused, got %s", recordedTransition.ToState)
+	}
+	if recordedTransition.Reason != "learner reported paused status" {
+		t.Fatalf("unexpected transition reason: %s", recordedTransition.Reason)
+	}
+}
+
+func TestHandleHeartbeatTransitionsPausedToRunning(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:          "run-1",
+		State:       types.RunStatePaused,
+		CurrentStep: 10,
+	}
+	var recordedTransition storage.RunTransition
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			recordedTransition = transition
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusRunning,
+		Step:   11,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStateRunning {
+		t.Fatalf("expected state to transition to running, got %s", run.State)
+	}
+	if recordedTransition.FromState != types.RunStatePaused {
+		t.Fatalf("expected transition from paused, got %s", recordedTransition.FromState)
+	}
+	if recordedTransition.ToState != types.RunStateRunning {
+		t.Fatalf("expected transition to running, got %s", recordedTransition.ToState)
+	}
+	if recordedTransition.Reason != "learner resumed from paused" {
+		t.Fatalf("unexpected transition reason: %s", recordedTransition.Reason)
+	}
+}
+
+func TestHandleHeartbeatTransitionsRunningToErrored(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:          "run-1",
+		State:       types.RunStateRunning,
+		CurrentStep: 10,
+	}
+	var recordedTransition storage.RunTransition
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			recordedTransition = transition
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusErrored,
+		Step:   10,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStateErrored {
+		t.Fatalf("expected state to transition to errored, got %s", run.State)
+	}
+	if run.EndedAt == nil {
+		t.Fatalf("expected EndedAt to be set")
+	}
+	if !run.EndedAt.Equal(now) {
+		t.Fatalf("expected EndedAt to be %v, got %v", now, run.EndedAt)
+	}
+	if recordedTransition.FromState != types.RunStateRunning {
+		t.Fatalf("expected transition from running, got %s", recordedTransition.FromState)
+	}
+	if recordedTransition.ToState != types.RunStateErrored {
+		t.Fatalf("expected transition to errored, got %s", recordedTransition.ToState)
+	}
+	if recordedTransition.Reason != "learner reported errored status" {
+		t.Fatalf("unexpected transition reason: %s", recordedTransition.Reason)
+	}
+}
+
+func TestHandleHeartbeatTransitionsRunningToTerminating(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:          "run-1",
+		State:       types.RunStateRunning,
+		CurrentStep: 10,
+	}
+	var recordedTransition storage.RunTransition
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			recordedTransition = transition
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusTerminating,
+		Step:   10,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStateTerminating {
+		t.Fatalf("expected state to transition to terminating, got %s", run.State)
+	}
+	if recordedTransition.FromState != types.RunStateRunning {
+		t.Fatalf("expected transition from running, got %s", recordedTransition.FromState)
+	}
+	if recordedTransition.ToState != types.RunStateTerminating {
+		t.Fatalf("expected transition to terminating, got %s", recordedTransition.ToState)
+	}
+	if recordedTransition.Reason != "learner reported terminating status" {
+		t.Fatalf("unexpected transition reason: %s", recordedTransition.Reason)
+	}
+}
+
+func TestHandleHeartbeatNoTransitionWhenStateUnchanged(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	storedRun := types.Run{
+		ID:          "run-1",
+		State:       types.RunStateRunning,
+		CurrentStep: 10,
+	}
+	var transitionCalled bool
+
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return storedRun, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			return nil
+		},
+		appendTransitionFn: func(ctx context.Context, transition storage.RunTransition) error {
+			transitionCalled = true
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, &stubPublisher{}, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	payload := types.HeartbeatPayload{
+		RunID:  storedRun.ID,
+		Status: types.RuntimeStatusRunning,
+		Step:   11,
+	}
+
+	run, err := orch.HandleHeartbeat(context.Background(), storedRun.ID, payload)
+	if err != nil {
+		t.Fatalf("HandleHeartbeat returned error: %v", err)
+	}
+
+	if run.State != types.RunStateRunning {
+		t.Fatalf("expected state to remain running, got %s", run.State)
+	}
+	if transitionCalled {
+		t.Fatalf("expected no transition to be recorded when state unchanged")
+	}
+}
