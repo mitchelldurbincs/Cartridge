@@ -219,5 +219,7 @@ func (r Run) MergeHeartbeat(h HeartbeatPayload, receivedAt time.Time) Run {
 	r.SamplesPerSecond = h.SamplesPerSecond
 	r.Loss = h.Loss
 	r.CheckpointVersion = h.CheckpointVersion
+	r.UpdatedAt = receivedAt
+	r.HealthStatus = RunHealthHealthy
 	return r
 }
