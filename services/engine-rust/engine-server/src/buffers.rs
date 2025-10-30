@@ -87,12 +87,8 @@ impl BufferPool {
     pub fn get_state_buffer(&self) -> Vec<u8> {
         let mut buffers = self.state_buffers.lock().unwrap();
         let buffer = buffers.pop().unwrap_or_else(Vec::new);
-        counter!("engine_buffer_pool_borrows_total", 1, "buffer" => "state");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "state"
-        );
+        counter!("engine_buffer_pool_borrows_total", "buffer" => "state").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "state").set(buffers.len() as f64);
         buffer
     }
 
@@ -106,29 +102,21 @@ impl BufferPool {
         // Shrink oversized buffers to prevent memory leaks from large allocations
         if buf.capacity() > MAX_BUFFER_CAPACITY {
             buf.shrink_to(MAX_BUFFER_CAPACITY);
-            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "state");
+            counter!("engine_buffer_pool_shrinks_total", "buffer" => "state").increment(1);
         }
 
         let mut buffers = self.state_buffers.lock().unwrap();
         buffers.push(buf);
-        counter!("engine_buffer_pool_returns_total", 1, "buffer" => "state");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "state"
-        );
+        counter!("engine_buffer_pool_returns_total", "buffer" => "state").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "state").set(buffers.len() as f64);
     }
 
     /// Get an observation buffer from the pool
     pub fn get_obs_buffer(&self) -> Vec<u8> {
         let mut buffers = self.obs_buffers.lock().unwrap();
         let buffer = buffers.pop().unwrap_or_else(Vec::new);
-        counter!("engine_buffer_pool_borrows_total", 1, "buffer" => "obs");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "obs"
-        );
+        counter!("engine_buffer_pool_borrows_total", "buffer" => "obs").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "obs").set(buffers.len() as f64);
         buffer
     }
 
@@ -142,29 +130,21 @@ impl BufferPool {
         // Shrink oversized buffers to prevent memory leaks from large allocations
         if buf.capacity() > MAX_BUFFER_CAPACITY {
             buf.shrink_to(MAX_BUFFER_CAPACITY);
-            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "obs");
+            counter!("engine_buffer_pool_shrinks_total", "buffer" => "obs").increment(1);
         }
 
         let mut buffers = self.obs_buffers.lock().unwrap();
         buffers.push(buf);
-        counter!("engine_buffer_pool_returns_total", 1, "buffer" => "obs");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "obs"
-        );
+        counter!("engine_buffer_pool_returns_total", "buffer" => "obs").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "obs").set(buffers.len() as f64);
     }
 
     /// Get an action buffer from the pool
     pub fn get_action_buffer(&self) -> Vec<u8> {
         let mut buffers = self.action_buffers.lock().unwrap();
         let buffer = buffers.pop().unwrap_or_else(Vec::new);
-        counter!("engine_buffer_pool_borrows_total", 1, "buffer" => "action");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "action"
-        );
+        counter!("engine_buffer_pool_borrows_total", "buffer" => "action").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "action").set(buffers.len() as f64);
         buffer
     }
 
@@ -178,17 +158,13 @@ impl BufferPool {
         // Shrink oversized buffers to prevent memory leaks from large allocations
         if buf.capacity() > MAX_BUFFER_CAPACITY {
             buf.shrink_to(MAX_BUFFER_CAPACITY);
-            counter!("engine_buffer_pool_shrinks_total", 1, "buffer" => "action");
+            counter!("engine_buffer_pool_shrinks_total", "buffer" => "action").increment(1);
         }
 
         let mut buffers = self.action_buffers.lock().unwrap();
         buffers.push(buf);
-        counter!("engine_buffer_pool_returns_total", 1, "buffer" => "action");
-        gauge!(
-            "engine_buffer_pool_available",
-            buffers.len() as f64,
-            "buffer" => "action"
-        );
+        counter!("engine_buffer_pool_returns_total", "buffer" => "action").increment(1);
+        gauge!("engine_buffer_pool_available", "buffer" => "action").set(buffers.len() as f64);
     }
 
     /// Get statistics about the buffer pool
@@ -268,21 +244,12 @@ impl PooledBuffer {
 
 impl BufferPool {
     fn record_buffer_levels(&self) {
-        gauge!(
-            "engine_buffer_pool_available",
-            self.state_buffers.lock().unwrap().len() as f64,
-            "buffer" => "state"
-        );
-        gauge!(
-            "engine_buffer_pool_available",
-            self.obs_buffers.lock().unwrap().len() as f64,
-            "buffer" => "obs"
-        );
-        gauge!(
-            "engine_buffer_pool_available",
-            self.action_buffers.lock().unwrap().len() as f64,
-            "buffer" => "action"
-        );
+        gauge!("engine_buffer_pool_available", "buffer" => "state")
+            .set(self.state_buffers.lock().unwrap().len() as f64);
+        gauge!("engine_buffer_pool_available", "buffer" => "obs")
+            .set(self.obs_buffers.lock().unwrap().len() as f64);
+        gauge!("engine_buffer_pool_available", "buffer" => "action")
+            .set(self.action_buffers.lock().unwrap().len() as f64);
     }
 }
 

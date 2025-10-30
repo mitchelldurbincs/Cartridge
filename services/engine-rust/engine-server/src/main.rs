@@ -8,7 +8,7 @@ use cartridge_observability::{init_prometheus_metrics_from_env, init_tracing_def
 use engine_proto::engine_server::EngineServer;
 use engine_server::{registry_init, EngineService};
 use tonic::transport::Server;
-use tracing::info;
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +17,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(log_level = %log_level, "Tracing initialized");
 
     // Initialize Prometheus metrics
-    init_prometheus_metrics_from_env("ENGINE_METRICS_ADDR")?;
+    if let Err(err) = init_prometheus_metrics_from_env("ENGINE_METRICS_ADDR") {
+        warn!(
+            error = %err,
+            "Failed to initialize Prometheus metrics exporter; continuing without metrics"
+        );
+    }
 
     // Initialize the game registry
     registry_init::initialize_registry();
@@ -33,10 +38,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(%addr, "Engine server starting");
 
     // Start the server
-    Server::builder()
+    match Server::builder()
         .add_service(EngineServer::new(engine_service))
         .serve(addr)
-        .await?;
-
-    Ok(())
+        .await
+    {
+        Ok(()) => {
+            info!("Engine server stopped gracefully");
+            Ok(())
+        }
+        Err(err) => {
+            error!(error = %err, "Engine server failed");
+            Err(err.into())
+        }
+    }
 }

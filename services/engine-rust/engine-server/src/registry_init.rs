@@ -18,7 +18,7 @@ pub fn initialize_registry() {
     });
 
     let games = engine_core::registry::list_registered_games();
-    gauge!("engine_registry_games", games.len() as f64);
+    gauge!("engine_registry_games").set(games.len() as f64);
     info!(count = games.len(), "Initialized game registry");
 
     // Log registered games
@@ -30,7 +30,9 @@ pub fn initialize_registry() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::registry::{clear_registry, create_game, is_registered, list_registered_games};
+    use engine_core::registry::{
+        clear_registry, create_game, is_registered, list_registered_games,
+    };
     use once_cell::sync::Lazy;
     use std::sync::Mutex;
 
