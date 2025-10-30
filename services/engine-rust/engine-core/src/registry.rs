@@ -112,7 +112,7 @@ pub fn register_game(env_id: String, factory: GameFactory) {
     if registry.contains_key(&env_id) {
         warn!(env_id = %env_id, "Overriding existing game registration");
     }
-    counter!("engine_registry_registrations_total");
+    counter!("engine_registry_registrations_total").increment(1);
     registry.insert(env_id, factory);
     gauge!("engine_registry_games").set(registry.len() as f64);
 }
@@ -147,7 +147,7 @@ pub fn create_game(env_id: &str) -> Option<Box<dyn ErasedGame>> {
         Some(factory) => Some(factory()),
         None => {
             warn!(env_id = %env_id, "Attempted to create unregistered game");
-            counter!("engine_registry_create_failures_total");
+            counter!("engine_registry_create_failures_total").increment(1);
             None
         }
     }

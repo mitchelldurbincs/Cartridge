@@ -47,11 +47,8 @@ impl EngineService {
     }
 
     fn observe_rpc_latency(method: &'static str, start: Instant) {
-        histogram!(
-            "engine_rpc_latency_seconds",
-            start.elapsed().as_secs_f64(),
-            "method" => method
-        );
+        histogram!("engine_rpc_latency_seconds", "method" => method)
+            .record(start.elapsed().as_secs_f64());
     }
 
     /// Sample a random action from the action space
@@ -93,7 +90,8 @@ impl EngineService {
                 if total_size != low.len() {
                     return Err(format!(
                         "Continuous action space shape mismatch: shape product {} != low.len() {}",
-                        total_size, low.len()
+                        total_size,
+                        low.len()
                     ));
                 }
 
@@ -160,7 +158,7 @@ impl Engine for EngineService {
         &self,
         request: Request<EngineId>,
     ) -> TonicResult<Response<Capabilities>> {
-        counter!("engine_rpc_requests_total", 1, "method" => "get_capabilities");
+        counter!("engine_rpc_requests_total", "method" => "get_capabilities").increment(1);
         let start = Instant::now();
         let engine_id = request.into_inner();
 
@@ -168,10 +166,10 @@ impl Engine for EngineService {
         if !is_registered(&engine_id.env_id) {
             counter!(
                 "engine_rpc_failures_total",
-                1,
                 "method" => "get_capabilities",
                 "error" => "unknown_env"
-            );
+            )
+            .increment(1);
             Self::observe_rpc_latency("get_capabilities", start);
             return Err(Status::not_found(format!(
                 "Unknown env_id: {}",
@@ -185,10 +183,10 @@ impl Engine for EngineService {
             None => {
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "get_capabilities",
                     "error" => "create_failed"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("get_capabilities", start);
                 return Err(Status::internal("Failed to create game instance"));
             }
@@ -199,9 +197,9 @@ impl Engine for EngineService {
 
         counter!(
             "engine_rpc_success_total",
-            1,
             "method" => "get_capabilities"
-        );
+        )
+        .increment(1);
 
         Self::observe_rpc_latency("get_capabilities", start);
 
@@ -209,7 +207,7 @@ impl Engine for EngineService {
     }
 
     async fn reset(&self, request: Request<ResetRequest>) -> TonicResult<Response<ResetResponse>> {
-        counter!("engine_rpc_requests_total", 1, "method" => "reset");
+        counter!("engine_rpc_requests_total", "method" => "reset").increment(1);
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -218,10 +216,10 @@ impl Engine for EngineService {
             None => {
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "reset",
                     "error" => "missing_engine_id"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("reset", start);
                 return Err(Status::invalid_argument("Missing engine_id"));
             }
@@ -239,18 +237,18 @@ impl Engine for EngineService {
         // Use DashMap's entry API for lock-free concurrent access
         let mut game_entry = match self.game_cache.entry(key) {
             Entry::Occupied(entry) => {
-                counter!("engine_game_cache_hits_total", 1, "method" => "reset");
+                counter!("engine_game_cache_hits_total", "method" => "reset").increment(1);
                 entry.into_ref()
             }
             Entry::Vacant(entry) => {
-                counter!("engine_game_cache_misses_total", 1, "method" => "reset");
+                counter!("engine_game_cache_misses_total", "method" => "reset").increment(1);
                 let Some(game) = create_game(env_id.as_ref()) else {
                     counter!(
                         "engine_rpc_failures_total",
-                        1,
                         "method" => "reset",
                         "error" => "unknown_env"
-                    );
+                    )
+                    .increment(1);
                     Self::observe_rpc_latency("reset", start);
                     return Err(Status::not_found(format!("Unknown env_id: {}", env_id)));
                 };
@@ -258,7 +256,7 @@ impl Engine for EngineService {
             }
         };
 
-        gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
+        gauge!("engine_game_cache_entries").set(self.game_cache.len() as f64);
 
         // Perform reset
         if let Err(e) =
@@ -275,10 +273,10 @@ impl Engine for EngineService {
             );
             counter!(
                 "engine_rpc_failures_total",
-                1,
                 "method" => "reset",
                 "error" => "reset_failed"
-            );
+            )
+            .increment(1);
             Self::observe_rpc_latency("reset", start);
             return Err(Status::internal(format!(
                 "Reset failed: {} (env_id={}, seed={}, hint_size={})",
@@ -302,11 +300,7 @@ impl Engine for EngineService {
         self.buffer_pool.return_state_buffer(state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
 
-        counter!(
-            "engine_rpc_success_total",
-            1,
-            "method" => "reset"
-        );
+        counter!("engine_rpc_success_total", "method" => "reset").increment(1);
 
         Self::observe_rpc_latency("reset", start);
 
@@ -314,7 +308,7 @@ impl Engine for EngineService {
     }
 
     async fn step(&self, request: Request<StepRequest>) -> TonicResult<Response<StepResponse>> {
-        counter!("engine_rpc_requests_total", 1, "method" => "step");
+        counter!("engine_rpc_requests_total", "method" => "step").increment(1);
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -323,10 +317,10 @@ impl Engine for EngineService {
             None => {
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "step",
                     "error" => "missing_engine_id"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("step", start);
                 return Err(Status::invalid_argument("Missing engine_id"));
             }
@@ -335,10 +329,10 @@ impl Engine for EngineService {
         if !is_registered(&engine_id.env_id) {
             counter!(
                 "engine_rpc_failures_total",
-                1,
                 "method" => "step",
                 "error" => "unknown_env"
-            );
+            )
+            .increment(1);
             Self::observe_rpc_latency("step", start);
             return Err(Status::not_found(format!(
                 "Unknown env_id: {}",
@@ -354,18 +348,18 @@ impl Engine for EngineService {
         // Use DashMap's get_mut for fine-grained locking
         let mut game_entry = match self.game_cache.get_mut(&key) {
             Some(entry) => {
-                counter!("engine_game_cache_hits_total", 1, "method" => "step");
-                gauge!("engine_game_cache_entries", self.game_cache.len() as f64);
+                counter!("engine_game_cache_hits_total", "method" => "step").increment(1);
+                gauge!("engine_game_cache_entries").set(self.game_cache.len() as f64);
                 entry
             }
             None => {
-                counter!("engine_game_cache_misses_total", 1, "method" => "step");
+                counter!("engine_game_cache_misses_total", "method" => "step").increment(1);
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "step",
                     "error" => "not_initialized"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("step", start);
                 return Err(Status::failed_precondition(
                     "Game not initialized - call reset before step",
@@ -391,10 +385,10 @@ impl Engine for EngineService {
                     );
                     counter!(
                         "engine_rpc_failures_total",
-                        1,
                         "method" => "step",
                         "error" => "step_failed"
-                    );
+                    )
+                    .increment(1);
                     Self::observe_rpc_latency("step", start);
                     return Err(Status::internal(format!(
                         "Step failed: {} (env_id={}, state_size={}, action_size={})",
@@ -422,11 +416,7 @@ impl Engine for EngineService {
         self.buffer_pool.return_state_buffer(new_state_buf);
         self.buffer_pool.return_obs_buffer(obs_buf);
 
-        counter!(
-            "engine_rpc_success_total",
-            1,
-            "method" => "step"
-        );
+        counter!("engine_rpc_success_total", "method" => "step").increment(1);
 
         Self::observe_rpc_latency("step", start);
 
@@ -437,7 +427,7 @@ impl Engine for EngineService {
         &self,
         request: Request<BatchSimulateRequest>,
     ) -> TonicResult<Response<Self::BatchSimulateStream>> {
-        counter!("engine_rpc_requests_total", 1, "method" => "batch_simulate");
+        counter!("engine_rpc_requests_total", "method" => "batch_simulate").increment(1);
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -447,10 +437,10 @@ impl Engine for EngineService {
             None => {
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "batch_simulate",
                     "error" => "missing_engine_id"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("batch_simulate", start);
                 return Err(Status::invalid_argument("Missing engine_id"));
             }
@@ -460,10 +450,10 @@ impl Engine for EngineService {
         if !is_registered(&engine_id.env_id) {
             counter!(
                 "engine_rpc_failures_total",
-                1,
                 "method" => "batch_simulate",
                 "error" => "unknown_env"
-            );
+            )
+            .increment(1);
             Self::observe_rpc_latency("batch_simulate", start);
             return Err(Status::not_found(format!(
                 "Unknown env_id: {}",
@@ -475,10 +465,10 @@ impl Engine for EngineService {
         if req.trajectories.is_empty() {
             counter!(
                 "engine_rpc_failures_total",
-                1,
                 "method" => "batch_simulate",
                 "error" => "empty_batch"
-            );
+            )
+            .increment(1);
             Self::observe_rpc_latency("batch_simulate", start);
             return Err(Status::invalid_argument(
                 "No trajectories provided in batch",
@@ -491,10 +481,10 @@ impl Engine for EngineService {
             None => {
                 counter!(
                     "engine_rpc_failures_total",
-                    1,
                     "method" => "batch_simulate",
                     "error" => "create_failed"
-                );
+                )
+                .increment(1);
                 Self::observe_rpc_latency("batch_simulate", start);
                 return Err(Status::internal("Failed to create game instance"));
             }
@@ -508,15 +498,8 @@ impl Engine for EngineService {
         let return_states = req.return_states;
         let return_observations = req.return_observations;
 
-        counter!(
-            "engine_rpc_success_total",
-            1,
-            "method" => "batch_simulate"
-        );
-        counter!(
-            "engine_batch_simulate_trajectories_total",
-            trajectories.len() as u64,
-        );
+        counter!("engine_rpc_success_total", "method" => "batch_simulate").increment(1);
+        counter!("engine_batch_simulate_trajectories_total").increment(trajectories.len() as u64);
 
         Self::observe_rpc_latency("batch_simulate", start);
 
@@ -540,9 +523,9 @@ impl Engine for EngineService {
                         );
                         counter!(
                             "engine_batch_simulate_trajectory_failures_total",
-                            1,
                             "error" => "create_failed"
-                        );
+                        )
+                        .increment(1);
                         continue;
                     }
                 };
@@ -563,9 +546,9 @@ impl Engine for EngineService {
                     );
                     counter!(
                         "engine_batch_simulate_trajectory_failures_total",
-                        1,
                         "error" => "reset_failed"
-                    );
+                    )
+                    .increment(1);
                     buffer_pool.return_state_buffer(state_buf);
                     buffer_pool.return_obs_buffer(obs_buf);
                     buffer_pool.return_action_buffer(action_buf);
@@ -597,9 +580,9 @@ impl Engine for EngineService {
                         );
                         counter!(
                             "engine_batch_simulate_trajectory_failures_total",
-                            1,
                             "error" => "action_sample_failed"
-                        );
+                        )
+                        .increment(1);
                         break;
                     }
 
@@ -637,9 +620,9 @@ impl Engine for EngineService {
                             );
                             counter!(
                                 "engine_batch_simulate_trajectory_failures_total",
-                                1,
                                 "error" => "step_failed"
-                            );
+                            )
+                            .increment(1);
                             buffer_pool.return_state_buffer(next_state_buf);
                             buffer_pool.return_obs_buffer(next_obs_buf);
                             break;
@@ -682,18 +665,11 @@ impl Engine for EngineService {
                     total_reward,
                 });
 
-                counter!(
-                    "engine_batch_simulate_steps_total",
-                    total_steps as u64,
-                );
-                histogram!(
-                    "engine_batch_simulate_trajectory_steps",
-                    total_steps as f64,
-                );
-                histogram!(
-                    "engine_batch_simulate_trajectory_reward",
-                    total_reward as f64,
-                );
+                counter!("engine_batch_simulate_steps_total").increment(total_steps as u64);
+                histogram!("engine_batch_simulate_trajectory_steps")
+                    .record(total_steps as f64);
+                histogram!("engine_batch_simulate_trajectory_reward")
+                    .record(total_reward as f64);
             }
 
             // Send final chunk with all results
@@ -1343,7 +1319,9 @@ mod tests {
 
         let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Discrete action space with n=0"));
+        assert!(result
+            .unwrap_err()
+            .contains("Discrete action space with n=0"));
     }
 
     #[test]
@@ -1377,7 +1355,9 @@ mod tests {
 
         let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("MultiDiscrete action space with n=0"));
+        assert!(result
+            .unwrap_err()
+            .contains("MultiDiscrete action space with n=0"));
     }
 
     #[test]
