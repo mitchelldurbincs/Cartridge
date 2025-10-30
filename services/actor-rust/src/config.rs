@@ -166,4 +166,47 @@ mod tests {
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("invalid log level"));
     }
+
+    #[test]
+    fn validate_rejects_empty_env_id() {
+        let mut cfg = base_config();
+        cfg.env_id.clear();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("env_id"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_episode_timeout() {
+        let mut cfg = base_config();
+        cfg.episode_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("episode_timeout_secs"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_flush_interval() {
+        let mut cfg = base_config();
+        cfg.flush_interval_secs = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("flush_interval_secs"));
+    }
+
+    #[test]
+    fn validate_accepts_negative_max_episodes() {
+        let mut cfg = base_config();
+        cfg.max_episodes = -1; // Unlimited mode
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn episode_timeout_returns_correct_duration() {
+        let cfg = base_config();
+        assert_eq!(cfg.episode_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn flush_interval_returns_correct_duration() {
+        let cfg = base_config();
+        assert_eq!(cfg.flush_interval(), Duration::from_secs(5));
+    }
 }

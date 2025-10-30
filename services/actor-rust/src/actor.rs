@@ -311,21 +311,23 @@ impl Actor {
                 metadata: std::collections::HashMap::new(),
             };
 
-            // Add to buffer
-            {
+            // Add to buffer and check if should flush
+            let should_flush = {
                 let mut buffer = self.transition_buffer.lock().unwrap();
                 buffer.push(transition);
 
-                // Flush buffer if full
                 gauge!(
                     "actor_transitions_buffered",
                     buffer.len() as f64,
                     "env_id" => self.config.env_id.clone()
                 );
-                if buffer.len() >= self.config.batch_size {
-                    drop(buffer); // Release lock before async call
-                    self.flush_buffer().await?;
-                }
+
+                buffer.len() >= self.config.batch_size
+            }; // buffer guard dropped here
+
+            // Flush if needed (no lock held)
+            if should_flush {
+                self.flush_buffer().await?;
             }
 
             // Check if episode is done
@@ -496,6 +498,14 @@ mod tests {
 
     #[tonic::async_trait]
     impl Engine for MockEngine {
+        type BatchSimulateStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
+                    + Send
+                    + 'static,
+            >,
+        >;
+
         async fn get_capabilities(
             &self,
             _request: tonic::Request<EngineId>,
@@ -534,7 +544,7 @@ mod tests {
         async fn batch_simulate(
             &self,
             _request: tonic::Request<BatchSimulateRequest>,
-        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+        ) -> Result<Response<Self::BatchSimulateStream>, Status> {
             Err(Status::unimplemented("batch_simulate not used in tests"))
         }
     }
@@ -558,6 +568,14 @@ mod tests {
 
     #[tonic::async_trait]
     impl Engine for FailingEngine {
+        type BatchSimulateStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
+                    + Send
+                    + 'static,
+            >,
+        >;
+
         async fn get_capabilities(
             &self,
             _request: tonic::Request<EngineId>,
@@ -624,7 +642,7 @@ mod tests {
         async fn batch_simulate(
             &self,
             _request: tonic::Request<BatchSimulateRequest>,
-        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+        ) -> Result<Response<Self::BatchSimulateStream>, Status> {
             Err(Status::unimplemented("batch_simulate not used in tests"))
         }
     }
@@ -636,6 +654,14 @@ mod tests {
 
     #[tonic::async_trait]
     impl Engine for SlowEngine {
+        type BatchSimulateStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
+                    + Send
+                    + 'static,
+            >,
+        >;
+
         async fn get_capabilities(
             &self,
             _request: tonic::Request<EngineId>,
@@ -691,7 +717,77 @@ mod tests {
         async fn batch_simulate(
             &self,
             _request: tonic::Request<BatchSimulateRequest>,
-        ) -> Result<Response<tonic::codec::Streaming<SimResultChunk>>, Status> {
+        ) -> Result<Response<Self::BatchSimulateStream>, Status> {
+            Err(Status::unimplemented("batch_simulate not used in tests"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct SlowStepEngine;
+
+    #[tonic::async_trait]
+    impl Engine for SlowStepEngine {
+        type BatchSimulateStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
+                    + Send
+                    + 'static,
+            >,
+        >;
+
+        async fn get_capabilities(
+            &self,
+            _request: tonic::Request<EngineId>,
+        ) -> Result<Response<Capabilities>, Status> {
+            Ok(Response::new(Capabilities {
+                id: Some(EngineId {
+                    env_id: "test-env".to_string(),
+                    build_id: "test-build".to_string(),
+                }),
+                enc: Some(Encoding {
+                    state: "test:v1".to_string(),
+                    action: "test:v1".to_string(),
+                    obs: "test:v1".to_string(),
+                    schema_version: 1,
+                }),
+                max_horizon: 100,
+                action_space: Some(
+                    crate::proto::engine::v1::capabilities::ActionSpace::DiscreteN(3),
+                ),
+                preferred_batch: 32,
+            }))
+        }
+
+        async fn reset(
+            &self,
+            _request: tonic::Request<ResetRequest>,
+        ) -> Result<Response<ResetResponse>, Status> {
+            // Reset quickly - no delay
+            Ok(Response::new(ResetResponse {
+                state: vec![0, 0, 0],
+                obs: vec![1, 2, 3],
+            }))
+        }
+
+        async fn step(
+            &self,
+            _request: tonic::Request<StepRequest>,
+        ) -> Result<Response<StepResponse>, Status> {
+            // Step slowly - long delay
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(Response::new(StepResponse {
+                state: vec![1, 0, 0],
+                obs: vec![1, 2, 3],
+                reward: 1.0,
+                done: false,
+                info: 0,
+            }))
+        }
+
+        async fn batch_simulate(
+            &self,
+            _request: tonic::Request<BatchSimulateRequest>,
+        ) -> Result<Response<Self::BatchSimulateStream>, Status> {
             Err(Status::unimplemented("batch_simulate not used in tests"))
         }
     }
@@ -1380,6 +1476,33 @@ mod tests {
 
         let result = actor.run_episode().await;
         assert!(result.is_err(), "episode should timeout on slow reset");
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "error should mention timeout"
+        );
+
+        engine_shutdown.send(()).unwrap();
+        replay_shutdown.send(()).unwrap();
+        engine_handle.await.unwrap();
+        replay_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // TODO: Investigate mock server connection issues affecting all actor tests
+    async fn run_episode_times_out_on_slow_step() {
+        let replay_service = MockReplay::default();
+        let engine = SlowStepEngine;
+
+        let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
+        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+
+        let mut config = create_test_config(engine_addr, replay_addr);
+        config.episode_timeout_secs = 1; // Very short timeout
+
+        let actor = Actor::new(config).await.expect("failed to create actor");
+
+        let result = actor.run_episode().await;
+        assert!(result.is_err(), "episode should timeout on slow step");
         assert!(
             result.unwrap_err().to_string().contains("timed out"),
             "error should mention timeout"
