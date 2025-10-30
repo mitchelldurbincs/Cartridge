@@ -68,6 +68,12 @@ func (m *MemoryRegistry) Upsert(ctx context.Context, input service.PublishInput)
 		case ch <- snapshot:
 		default:
 			go func(out chan service.VersionSnapshot, snap service.VersionSnapshot) {
+				defer func() {
+					// Recover from panic if channel is closed by cancel() during send.
+					// This is an expected race: a subscriber may cancel while we're
+					// attempting an async send. We don't want to crash the service.
+					_ = recover()
+				}()
 				select {
 				case out <- snap:
 				case <-ctx.Done():
