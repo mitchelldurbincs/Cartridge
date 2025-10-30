@@ -41,6 +41,8 @@ ARG BINARY_NAME
 ARG BUILD_HEALTHCHECK
 
 COPY --from=busybox /bin/busybox /busybox/busybox
+COPY --from=busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
+COPY --from=busybox /lib/libc.musl-x86_64.so.1 /lib/libc.musl-x86_64.so.1
 
 # Copy all binaries (includes main binary and optional healthcheck)
 COPY --from=builder /workspace/bin/${BINARY_NAME}* /usr/local/bin/
