@@ -367,19 +367,20 @@ impl Game for TicTacToe {
                 position
             )));
         }
-        out.push(position);
+        // Encode as u32 in little-endian format (4 bytes)
+        out.extend_from_slice(&(position as u32).to_le_bytes());
         Ok(())
     }
 
     fn decode_action(buf: &[u8]) -> Result<Self::Action, DecodeError> {
-        if buf.len() != 1 {
+        if buf.len() != 4 {
             return Err(DecodeError::InvalidLength {
-                expected: 1,
+                expected: 4,
                 actual: buf.len(),
             });
         }
 
-        let position = buf[0];
+        let position = u32::from_le_bytes(buf.try_into().unwrap());
         if position >= 9 {
             return Err(DecodeError::CorruptedData(format!(
                 "Invalid action position: {}",
@@ -387,7 +388,7 @@ impl Game for TicTacToe {
             )));
         }
 
-        Ok(Action::Place(position))
+        Ok(Action::Place(position as u8))
     }
 
     fn encode_obs(obs: &Self::Obs, out: &mut Vec<u8>) -> Result<(), EncodeError> {
@@ -603,12 +604,12 @@ mod tests {
     #[test]
     fn test_invalid_action_decoding() {
         // Test wrong length
-        let buf = vec![1, 2]; // Too long
+        let buf = vec![1, 2]; // Too short
         let result = TicTacToe::decode_action(&buf);
         assert!(result.is_err());
 
         // Test invalid position
-        let buf = vec![9]; // Position out of bounds
+        let buf = 9u32.to_le_bytes().to_vec(); // Position out of bounds
         let result = TicTacToe::decode_action(&buf);
         assert!(result.is_err());
     }
