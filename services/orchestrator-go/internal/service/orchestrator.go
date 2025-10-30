@@ -68,7 +68,7 @@ func (o *Orchestrator) CreateRun(ctx context.Context, input CreateRunInput) (typ
 		LaunchManifest:   input.LaunchManifest,
 		Overrides:        input.Overrides,
 		Priority:         input.Priority,
-		RuntimeStatus:    types.RuntimeStatusRunning,
+		RuntimeStatus:    types.RuntimeStatusPaused,
 		HealthStatus:     types.RunHealthHealthy,
 		CurrentStep:      0,
 		SamplesPerSecond: 0,
@@ -169,18 +169,50 @@ func (o *Orchestrator) ResetRun(ctx context.Context, runID string) (types.Run, e
 		Int64("old_checkpoint", run.CheckpointVersion).
 		Msg("resetting run progress")
 
+	previousState := run.State
+
 	// Reset progress fields
 	run.CurrentStep = 0
 	run.CheckpointVersion = 0
 	run.Loss = 0
 	run.SamplesPerSecond = 0
 	run.LastHeartbeatAt = nil
-	run.RuntimeStatus = types.RuntimeStatusRunning
+	run.State = types.RunStateQueued
+	run.RuntimeStatus = types.RuntimeStatusPaused
 	run.HealthStatus = types.RunHealthHealthy
 	run.UpdatedAt = o.now()
 
 	if err := o.store.UpdateRun(ctx, run); err != nil {
 		return types.Run{}, err
+	}
+
+	if previousState != run.State {
+		transition := storage.RunTransition{
+			RunID:     run.ID,
+			FromState: previousState,
+			ToState:   run.State,
+			ChangedBy: "system",
+			Reason:    "reset",
+			CreatedAt: run.UpdatedAt,
+		}
+		if err := o.store.AppendTransition(ctx, transition); err != nil {
+			o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to record reset transition")
+		} else if o.metrics != nil {
+			o.metrics.RecordRunStateTransition(string(transition.FromState), string(transition.ToState))
+		}
+	}
+
+	statusEvent := events.RunStatusEvent{
+		RunID:            run.ID,
+		State:            string(run.State),
+		RuntimeStatus:    string(run.RuntimeStatus),
+		HealthStatus:     string(run.HealthStatus),
+		Step:             run.CurrentStep,
+		SamplesPerSecond: run.SamplesPerSecond,
+		Loss:             run.Loss,
+	}
+	if err := o.events.PublishRunStatus(ctx, statusEvent); err != nil {
+		o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to publish reset status event")
 	}
 
 	o.logger.Info().Str("run_id", runID).Msg("run progress reset successfully")
