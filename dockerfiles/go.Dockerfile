@@ -33,7 +33,7 @@ RUN if [ "$BUILD_HEALTHCHECK" = "true" ]; then \
 RUN printf '#!/bin/sh\nexec /usr/local/bin/%s "$@"\n' "${BINARY_NAME}" > /workspace/bin/entrypoint.sh && \
     chmod +x /workspace/bin/entrypoint.sh
 
-FROM busybox:1.36 AS busybox
+FROM alpine:3.19 AS busybox
 
 FROM gcr.io/distroless/base-debian12:nonroot
 
