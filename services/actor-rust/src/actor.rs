@@ -64,7 +64,10 @@ impl Actor {
                             service_clone, addr_clone, attempt
                         );
                     } else {
-                        info!("Successfully connected to {} at {}", service_clone, addr_clone);
+                        info!(
+                            "Successfully connected to {} at {}",
+                            service_clone, addr_clone
+                        );
                     }
                     Ok(channel)
                 }
@@ -167,20 +170,12 @@ impl Actor {
 
     pub async fn new(config: Config) -> Result<Self> {
         // Connect to engine service with retry
-        let engine_channel = Self::connect_with_retry(
-            &config.engine_addr,
-            "engine",
-            &config,
-        )
-        .await?;
+        let engine_channel =
+            Self::connect_with_retry(&config.engine_addr, "engine", &config).await?;
 
         // Connect to replay service with retry
-        let replay_channel = Self::connect_with_retry(
-            &config.replay_addr,
-            "replay",
-            &config,
-        )
-        .await?;
+        let replay_channel =
+            Self::connect_with_retry(&config.replay_addr, "replay", &config).await?;
 
         let mut engine_client = EngineClient::new(engine_channel);
         let replay_client = ReplayClient::new(replay_channel);
@@ -235,9 +230,9 @@ impl Actor {
 
         gauge!(
             "actor_transitions_buffered",
-            0.0,
             "env_id" => self.config.env_id.clone()
-        );
+        )
+        .set(0.0);
 
         info!("Entering main event loop");
 
@@ -282,26 +277,26 @@ impl Actor {
                             let duration = episode_start.elapsed().as_secs_f64();
                             counter!(
                                 "actor_episode_results_total",
-                                1,
                                 "result" => "success",
                                 "env_id" => env_label.clone()
-                            );
+                            )
+                            .increment(1);
                             histogram!(
                                 "actor_episode_duration_seconds",
-                                duration,
                                 "result" => "success",
                                 "env_id" => env_label.clone()
-                            );
+                            )
+                            .record(duration);
                             gauge!(
                                 "actor_episode_last_steps",
-                                steps as f64,
                                 "env_id" => env_label.clone()
-                            );
+                            )
+                            .set(steps as f64);
                             gauge!(
                                 "actor_episode_last_return",
-                                total_reward as f64,
                                 "env_id" => env_label.clone()
-                            );
+                            )
+                            .set(total_reward as f64);
                             debug!(
                                 episode = new_count,
                                 steps,
@@ -319,16 +314,16 @@ impl Actor {
                             let duration = episode_start.elapsed().as_secs_f64();
                             counter!(
                                 "actor_episode_results_total",
-                                1,
                                 "result" => "error",
                                 "env_id" => env_label
-                            );
+                            )
+                            .increment(1);
                             histogram!(
                                 "actor_episode_duration_seconds",
-                                duration,
                                 "result" => "error",
                                 "env_id" => self.config.env_id.clone()
-                            );
+                            )
+                            .record(duration);
                             // Continue with next episode rather than stopping
                         }
                     }
@@ -459,9 +454,9 @@ impl Actor {
 
                 gauge!(
                     "actor_transitions_buffered",
-                    buffer.len() as f64,
                     "env_id" => self.config.env_id.clone()
-                );
+                )
+                .set(buffer.len() as f64);
 
                 buffer.len() >= self.config.batch_size
             }; // buffer guard dropped here
@@ -497,9 +492,9 @@ impl Actor {
             if buffer.is_empty() {
                 gauge!(
                     "actor_transitions_buffered",
-                    0.0,
                     "env_id" => self.config.env_id.clone()
-                );
+                )
+                .set(0.0);
                 return Ok(());
             }
             std::mem::take(&mut *buffer)
@@ -539,38 +534,38 @@ impl Actor {
                 }
                 counter!(
                     "actor_flush_results_total",
-                    1,
                     "result" => "success",
                     "env_id" => env_label.clone()
-                );
+                )
+                .increment(1);
                 counter!(
                     "actor_transitions_flushed_total",
-                    count as u64,
                     "env_id" => env_label.clone()
-                );
+                )
+                .increment(count as u64);
                 gauge!(
                     "actor_transitions_buffered",
-                    0.0,
                     "env_id" => env_label
-                );
+                )
+                .set(0.0);
                 Ok(())
             }
             Err(e) => {
                 counter!(
                     "actor_flush_results_total",
-                    1,
                     "result" => "error",
                     "env_id" => self.config.env_id.clone()
-                );
+                )
+                .increment(1);
                 let mut buffer = self.transition_buffer.lock().unwrap();
                 buffer.splice(0..0, transitions.into_iter());
                 let buffer_len = buffer.len();
                 drop(buffer);
                 gauge!(
                     "actor_transitions_buffered",
-                    buffer_len as f64,
                     "env_id" => self.config.env_id.clone()
-                );
+                )
+                .set(buffer_len as f64);
                 error!(
                     error = %e,
                     transitions = count,
@@ -649,11 +644,7 @@ mod tests {
     #[tonic::async_trait]
     impl Engine for MockEngine {
         type BatchSimulateStream = std::pin::Pin<
-            Box<
-                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
-                    + Send
-                    + 'static,
-            >,
+            Box<dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>> + Send + 'static>,
         >;
 
         async fn get_capabilities(
@@ -719,11 +710,7 @@ mod tests {
     #[tonic::async_trait]
     impl Engine for FailingEngine {
         type BatchSimulateStream = std::pin::Pin<
-            Box<
-                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
-                    + Send
-                    + 'static,
-            >,
+            Box<dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>> + Send + 'static>,
         >;
 
         async fn get_capabilities(
@@ -805,11 +792,7 @@ mod tests {
     #[tonic::async_trait]
     impl Engine for SlowEngine {
         type BatchSimulateStream = std::pin::Pin<
-            Box<
-                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
-                    + Send
-                    + 'static,
-            >,
+            Box<dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>> + Send + 'static>,
         >;
 
         async fn get_capabilities(
@@ -878,11 +861,7 @@ mod tests {
     #[tonic::async_trait]
     impl Engine for SlowStepEngine {
         type BatchSimulateStream = std::pin::Pin<
-            Box<
-                dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>>
-                    + Send
-                    + 'static,
-            >,
+            Box<dyn tokio_stream::Stream<Item = Result<SimResultChunk, Status>> + Send + 'static>,
         >;
 
         async fn get_capabilities(
@@ -1353,7 +1332,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr.clone(), replay_addr.clone());
         let actor = Actor::new(config).await.expect("failed to create actor");
@@ -1384,7 +1364,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr, replay_addr);
         let actor = Actor::new(config).await.expect("failed to create actor");
@@ -1418,7 +1399,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 3;
@@ -1433,7 +1415,10 @@ mod tests {
         };
 
         // Wait for completion
-        actor_handle.await.unwrap().expect("actor run should succeed");
+        actor_handle
+            .await
+            .unwrap()
+            .expect("actor run should succeed");
 
         // Verify episode count
         assert_eq!(
@@ -1470,7 +1455,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 1;
@@ -1482,15 +1468,14 @@ mod tests {
             tokio::spawn(async move { actor.run().await })
         };
 
-        actor_handle.await.unwrap().expect("actor run should succeed");
+        actor_handle
+            .await
+            .unwrap()
+            .expect("actor run should succeed");
 
         // Verify all transitions were stored
         let stored = stored_transitions.lock().unwrap();
-        assert_eq!(
-            stored.len(),
-            10,
-            "all 10 transitions should be flushed"
-        );
+        assert_eq!(stored.len(), 10, "all 10 transitions should be flushed");
 
         engine_shutdown.send(()).unwrap();
         replay_shutdown.send(()).unwrap();
@@ -1511,7 +1496,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr, replay_addr);
         let actor = Actor::new(config).await.expect("failed to create actor");
@@ -1534,7 +1520,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr, replay_addr);
         let actor = Actor::new(config).await.expect("failed to create actor");
@@ -1557,7 +1544,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr, replay_addr);
         let actor = Actor::new(config).await.expect("failed to create actor");
@@ -1602,7 +1590,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 2;
@@ -1613,7 +1602,10 @@ mod tests {
             tokio::spawn(async move { actor.run().await })
         };
 
-        actor_handle.await.unwrap().expect("actor should complete successfully");
+        actor_handle
+            .await
+            .unwrap()
+            .expect("actor should complete successfully");
 
         assert_eq!(
             actor.episode_count.load(Ordering::Relaxed),
@@ -1635,7 +1627,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.episode_timeout_secs = 1; // Very short timeout
@@ -1662,7 +1655,8 @@ mod tests {
         let engine = SlowStepEngine;
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.episode_timeout_secs = 1; // Very short timeout
@@ -1696,7 +1690,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 100; // Large number
@@ -1745,7 +1740,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 3;
@@ -1778,7 +1774,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let mut config = create_test_config(engine_addr, replay_addr);
         config.max_episodes = 1;
@@ -1790,7 +1787,10 @@ mod tests {
         assert_eq!(steps, 5);
 
         // Force final flush
-        actor.flush_buffer().await.expect("final flush should succeed");
+        actor
+            .flush_buffer()
+            .await
+            .expect("final flush should succeed");
 
         // Verify buffer is empty
         assert_eq!(
@@ -1823,7 +1823,8 @@ mod tests {
         };
 
         let (engine_addr, engine_shutdown, engine_handle) = start_mock_engine_server(engine).await;
-        let (replay_addr, replay_shutdown, replay_handle) = start_mock_replay_server(replay_service).await;
+        let (replay_addr, replay_shutdown, replay_handle) =
+            start_mock_replay_server(replay_service).await;
 
         let config = create_test_config(engine_addr, replay_addr);
         let actor = Actor::new(config).await.expect("failed to create actor");
