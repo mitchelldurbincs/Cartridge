@@ -505,3 +505,74 @@ func TestUpdateRunHealthPersistsChanges(t *testing.T) {
 		t.Fatalf("expected updated run to reflect new health status")
 	}
 }
+
+func TestResetRunClearsProgressAndPublishesEvent(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	lastHB := now.Add(-time.Hour)
+	stored := types.Run{
+		ID:                "run-1",
+		State:             types.RunStateRunning,
+		CurrentStep:       100,
+		CheckpointVersion: 5,
+		Loss:              0.42,
+		SamplesPerSecond:  256.7,
+		RuntimeStatus:     types.RuntimeStatusRunning,
+		HealthStatus:      types.RunHealthHealthy,
+		LastHeartbeatAt:   &lastHB,
+	}
+	var saved types.Run
+	publisher := &stubPublisher{}
+	store := &stubRunStore{
+		getRunFn: func(ctx context.Context, id string) (types.Run, error) {
+			return stored, nil
+		},
+		updateRunFn: func(ctx context.Context, run types.Run) error {
+			saved = run
+			return nil
+		},
+	}
+
+	orch := NewOrchestrator(store, publisher, newTestLogger())
+	orch.WithNow(func() time.Time { return now })
+
+	reset, err := orch.ResetRun(context.Background(), stored.ID)
+	if err != nil {
+		t.Fatalf("ResetRun returned error: %v", err)
+	}
+
+	if saved.CurrentStep != 0 {
+		t.Fatalf("expected step to be reset to 0, got %d", saved.CurrentStep)
+	}
+	if saved.CheckpointVersion != 0 {
+		t.Fatalf("expected checkpoint version to be reset to 0, got %d", saved.CheckpointVersion)
+	}
+	if saved.Loss != 0 {
+		t.Fatalf("expected loss to be reset to 0, got %f", saved.Loss)
+	}
+	if saved.SamplesPerSecond != 0 {
+		t.Fatalf("expected samples per second to be reset to 0, got %f", saved.SamplesPerSecond)
+	}
+	if saved.LastHeartbeatAt != nil {
+		t.Fatalf("expected last heartbeat to be nil, got %v", saved.LastHeartbeatAt)
+	}
+	if saved.RuntimeStatus != types.RuntimeStatusPaused {
+		t.Fatalf("expected runtime status to be paused, got %s", saved.RuntimeStatus)
+	}
+	if saved.HealthStatus != types.RunHealthHealthy {
+		t.Fatalf("expected health status to remain healthy, got %s", saved.HealthStatus)
+	}
+	if saved.UpdatedAt != now {
+		t.Fatalf("expected updated timestamp to be set to now")
+	}
+	if reset.CurrentStep != 0 || reset.RuntimeStatus != types.RuntimeStatusPaused {
+		t.Fatalf("expected returned run to reflect reset state")
+	}
+
+	if len(publisher.runStatusEvents) != 1 {
+		t.Fatalf("expected status event to be published after reset")
+	}
+	event := publisher.runStatusEvents[0]
+	if event.RunID != stored.ID || event.Step != 0 || event.RuntimeStatus != string(types.RuntimeStatusPaused) {
+		t.Fatalf("unexpected status event: %#v", event)
+	}
+}

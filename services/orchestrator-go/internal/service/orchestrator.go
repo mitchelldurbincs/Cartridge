@@ -68,7 +68,7 @@ func (o *Orchestrator) CreateRun(ctx context.Context, input CreateRunInput) (typ
 		LaunchManifest:   input.LaunchManifest,
 		Overrides:        input.Overrides,
 		Priority:         input.Priority,
-		RuntimeStatus:    types.RuntimeStatusRunning,
+		RuntimeStatus:    types.RuntimeStatusPaused, // Start paused until first heartbeat
 		HealthStatus:     types.RunHealthHealthy,
 		CurrentStep:      0,
 		SamplesPerSecond: 0,
@@ -175,12 +175,26 @@ func (o *Orchestrator) ResetRun(ctx context.Context, runID string) (types.Run, e
 	run.Loss = 0
 	run.SamplesPerSecond = 0
 	run.LastHeartbeatAt = nil
-	run.RuntimeStatus = types.RuntimeStatusRunning
+	run.RuntimeStatus = types.RuntimeStatusPaused // Reset to paused until learner comes back
 	run.HealthStatus = types.RunHealthHealthy
 	run.UpdatedAt = o.now()
 
 	if err := o.store.UpdateRun(ctx, run); err != nil {
 		return types.Run{}, err
+	}
+
+	// Publish status event so dashboards are aware of the reset
+	event := events.RunStatusEvent{
+		RunID:            run.ID,
+		State:            string(run.State),
+		RuntimeStatus:    string(run.RuntimeStatus),
+		HealthStatus:     string(run.HealthStatus),
+		Step:             run.CurrentStep,
+		SamplesPerSecond: run.SamplesPerSecond,
+		Loss:             run.Loss,
+	}
+	if err := o.events.PublishRunStatus(ctx, event); err != nil {
+		o.logger.Error().Err(err).Str("run_id", run.ID).Msg("failed to publish run status event after reset")
 	}
 
 	o.logger.Info().Str("run_id", runID).Msg("run progress reset successfully")
