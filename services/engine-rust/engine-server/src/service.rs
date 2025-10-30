@@ -69,7 +69,7 @@ impl EngineService {
                     return Err("Discrete action space with n=0".to_string());
                 }
                 let action = rng.gen_range(0..*n);
-                out.push(action as u8);
+                out.extend_from_slice(&action.to_le_bytes());
                 Ok(())
             }
             ActionSpace::MultiDiscrete(nvec) => {
@@ -78,7 +78,7 @@ impl EngineService {
                         return Err("MultiDiscrete action space with n=0".to_string());
                     }
                     let action = rng.gen_range(0..n);
-                    out.push(action as u8);
+                    out.extend_from_slice(&action.to_le_bytes());
                 }
                 Ok(())
             }
@@ -923,7 +923,7 @@ mod tests {
                 build_id: "test".to_string(),
             }),
             state: reset_resp.state,
-            action: vec![4], // Place in center
+            action: 4u32.to_le_bytes().to_vec(), // Place in center
         });
 
         let step_response = service.step(step_request).await.unwrap();
@@ -947,7 +947,7 @@ mod tests {
                 build_id: "test".to_string(),
             }),
             state: vec![0; 11],
-            action: vec![0],
+            action: 0u32.to_le_bytes().to_vec(),
         });
 
         let result = service.step(request).await;
@@ -1327,8 +1327,9 @@ mod tests {
 
         let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
         assert!(result.is_ok());
-        assert_eq!(buf.len(), 1);
-        assert!(buf[0] < 5);
+        assert_eq!(buf.len(), 4);
+        let action = u32::from_le_bytes(buf.try_into().unwrap());
+        assert!(action < 5);
     }
 
     #[test]
@@ -1356,10 +1357,13 @@ mod tests {
 
         let result = EngineService::sample_random_action(&action_space, &mut rng, &mut buf);
         assert!(result.is_ok());
-        assert_eq!(buf.len(), 3);
-        assert!(buf[0] < 3);
-        assert!(buf[1] < 4);
-        assert!(buf[2] < 5);
+        assert_eq!(buf.len(), 12); // 3 * 4 bytes
+        let action0 = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let action1 = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let action2 = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        assert!(action0 < 3);
+        assert!(action1 < 4);
+        assert!(action2 < 5);
     }
 
     #[test]
@@ -1514,7 +1518,7 @@ mod tests {
             let step_request = Request::new(StepRequest {
                 id: Some(engine_id.clone()),
                 state: current_state.clone(),
-                action: vec![step_count as u8],
+                action: (step_count as u32).to_le_bytes().to_vec(),
             });
 
             let step_response = service.step(step_request).await.unwrap();
@@ -1562,7 +1566,7 @@ mod tests {
                 let step_request = Request::new(StepRequest {
                     id: Some(engine_id.clone()),
                     state: current_state.clone(),
-                    action: vec![step_count as u8],
+                    action: (step_count as u32).to_le_bytes().to_vec(),
                 });
 
                 let step_response = service.step(step_request).await.unwrap();
@@ -1605,7 +1609,7 @@ mod tests {
             .step(Request::new(StepRequest {
                 id: Some(engine_id.clone()),
                 state: state0.clone(),
-                action: vec![0],
+                action: 0u32.to_le_bytes().to_vec(),
             }))
             .await
             .unwrap();
@@ -1618,7 +1622,7 @@ mod tests {
             .step(Request::new(StepRequest {
                 id: Some(engine_id.clone()),
                 state: state1.clone(),
-                action: vec![1],
+                action: 1u32.to_le_bytes().to_vec(),
             }))
             .await
             .unwrap();

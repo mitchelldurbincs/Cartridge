@@ -86,11 +86,8 @@ impl Policy for RandomPolicy {
                 if *n == 0 {
                     return Err(anyhow!("Discrete action space must have n > 0"));
                 }
-                if *n > 255 {
-                    return Err(anyhow!("Discrete action space with n > 255 not supported with single byte encoding"));
-                }
-                let action = self.rng.gen_range(0..*n) as u8;
-                Ok(vec![action])
+                let action = self.rng.gen_range(0..*n);
+                Ok(action.to_le_bytes().to_vec())
             }
             ActionSpace::MultiDiscrete { nvec } => {
                 let mut action_bytes = Vec::new();
@@ -159,8 +156,8 @@ mod tests {
 
         for _ in 0..10 {
             let action_bytes = policy.select_action(&[]).unwrap();
-            assert_eq!(action_bytes.len(), 1); // u8 = 1 byte
-            let action = action_bytes[0] as u32;
+            assert_eq!(action_bytes.len(), 4); // u32 = 4 bytes
+            let action = u32::from_le_bytes(action_bytes.try_into().unwrap());
             assert!(action < 4);
         }
     }
