@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use backoff::{future::retry, ExponentialBackoff};
 use metrics::{counter, gauge, histogram};
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -7,7 +8,7 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, timeout};
 use tonic::{transport::Channel, Request};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::policy::{Policy, RandomPolicy};
@@ -26,32 +27,160 @@ pub struct Actor {
 }
 
 impl Actor {
-    pub async fn new(config: Config) -> Result<Self> {
-        // Connect to engine service
-        info!("Connecting to engine service at {}", config.engine_addr);
-        let engine_channel = tonic::transport::Endpoint::new(config.engine_addr.clone())?
-            .connect()
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to connect to engine at {}: {}",
-                    config.engine_addr,
-                    e
-                )
-            })?;
+    /// Helper function to connect to a service with exponential backoff retry
+    async fn connect_with_retry(
+        addr: &str,
+        service_name: &str,
+        config: &Config,
+    ) -> Result<Channel> {
+        let backoff_config = ExponentialBackoff {
+            initial_interval: config.connection_retry_initial_interval(),
+            max_interval: config.connection_retry_max_interval(),
+            max_elapsed_time: None, // We'll use max_attempts instead
+            multiplier: 2.0,
+            randomization_factor: 0.1,
+            ..Default::default()
+        };
 
-        // Connect to replay service
-        info!("Connecting to replay service at {}", config.replay_addr);
-        let replay_channel = tonic::transport::Endpoint::new(config.replay_addr.clone())?
-            .connect()
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to connect to replay at {}: {}",
-                    config.replay_addr,
-                    e
-                )
-            })?;
+        let endpoint = tonic::transport::Endpoint::new(addr.to_string())?;
+        let addr_clone = addr.to_string();
+        let service_clone = service_name.to_string();
+        let max_attempts = config.connection_retry_max_attempts;
+
+        info!(
+            "Connecting to {} service at {} (max {} attempts)",
+            service_name, addr, max_attempts
+        );
+
+        let mut attempt = 0u32;
+        let result = retry(backoff_config, || async {
+            attempt += 1;
+
+            match endpoint.connect().await {
+                Ok(channel) => {
+                    if attempt > 1 {
+                        info!(
+                            "Successfully connected to {} at {} after {} attempts",
+                            service_clone, addr_clone, attempt
+                        );
+                    } else {
+                        info!("Successfully connected to {} at {}", service_clone, addr_clone);
+                    }
+                    Ok(channel)
+                }
+                Err(e) => {
+                    if attempt >= max_attempts {
+                        error!(
+                            "Failed to connect to {} at {} after {} attempts: {}",
+                            service_clone, addr_clone, attempt, e
+                        );
+                        Err(backoff::Error::Permanent(e))
+                    } else {
+                        warn!(
+                            "Failed to connect to {} at {} (attempt {}/{}): {}. Retrying...",
+                            service_clone, addr_clone, attempt, max_attempts, e
+                        );
+                        Err(backoff::Error::transient(e))
+                    }
+                }
+            }
+        })
+        .await;
+
+        result.map_err(|e| {
+            anyhow!(
+                "Failed to connect to {} at {} after {} attempts: {}",
+                service_name,
+                addr,
+                max_attempts,
+                e
+            )
+        })
+    }
+
+    /// Helper function to retry operations with exponential backoff
+    async fn retry_operation<F, Fut, T>(
+        config: &Config,
+        operation_name: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, tonic::Status>>,
+    {
+        let backoff_config = ExponentialBackoff {
+            initial_interval: config.operation_retry_initial_interval(),
+            max_interval: config.operation_retry_max_interval(),
+            max_elapsed_time: None,
+            multiplier: 2.0,
+            randomization_factor: 0.1,
+            ..Default::default()
+        };
+
+        let max_attempts = config.operation_retry_max_attempts;
+        let op_name = operation_name.to_string();
+        let mut attempt = 0u32;
+
+        let result = retry(backoff_config, || async {
+            attempt += 1;
+
+            match operation().await {
+                Ok(value) => {
+                    if attempt > 1 {
+                        debug!(
+                            "Operation '{}' succeeded after {} attempts",
+                            op_name, attempt
+                        );
+                    }
+                    Ok(value)
+                }
+                Err(e) => {
+                    // Determine if error is transient (retryable) or permanent
+                    let is_retryable = matches!(
+                        e.code(),
+                        tonic::Code::Unavailable
+                            | tonic::Code::DeadlineExceeded
+                            | tonic::Code::ResourceExhausted
+                            | tonic::Code::Aborted
+                    );
+
+                    if !is_retryable || attempt >= max_attempts {
+                        error!(
+                            "Operation '{}' failed permanently after {} attempts: {}",
+                            op_name, attempt, e
+                        );
+                        Err(backoff::Error::Permanent(e))
+                    } else {
+                        warn!(
+                            "Operation '{}' failed (attempt {}/{}): {}. Retrying...",
+                            op_name, attempt, max_attempts, e
+                        );
+                        Err(backoff::Error::transient(e))
+                    }
+                }
+            }
+        })
+        .await;
+
+        result.map_err(|e| anyhow!("Operation '{}' failed: {}", operation_name, e))
+    }
+
+    pub async fn new(config: Config) -> Result<Self> {
+        // Connect to engine service with retry
+        let engine_channel = Self::connect_with_retry(
+            &config.engine_addr,
+            "engine",
+            &config,
+        )
+        .await?;
+
+        // Connect to replay service with retry
+        let replay_channel = Self::connect_with_retry(
+            &config.replay_addr,
+            "replay",
+            &config,
+        )
+        .await?;
 
         let mut engine_client = EngineClient::new(engine_channel);
         let replay_client = ReplayClient::new(replay_channel);
@@ -237,15 +366,21 @@ impl Actor {
             "Starting new episode"
         );
 
+        // Reset with retry and timeout
+        let config_clone = self.config.clone();
+        let engine_client = self.engine_client.clone();
         let reset_response = timeout(
             self.config.episode_timeout(),
-            self.engine_client.clone().reset(reset_request),
+            Self::retry_operation(&config_clone, "reset", || {
+                let mut client = engine_client.clone();
+                let req = reset_request.clone();
+                async move { client.reset(req).await.map(|r| r.into_inner()) }
+            }),
         )
         .await
-        .map_err(|_| anyhow!("Reset timed out"))?
-        .map_err(|e| anyhow!("Failed to reset game: {}", e))?;
+        .map_err(|_| anyhow!("Reset timed out"))??;
 
-        let reset_data = reset_response.into_inner();
+        let reset_data = reset_response;
         let episode_id = format!(
             "{}-ep-{}-{}",
             self.config.actor_id,
@@ -280,15 +415,21 @@ impl Actor {
                 action: action.clone(),
             });
 
+            // Step with retry and timeout
+            let config_clone = self.config.clone();
+            let engine_client = self.engine_client.clone();
             let step_response = timeout(
                 self.config.episode_timeout(),
-                self.engine_client.clone().step(step_request),
+                Self::retry_operation(&config_clone, "step", || {
+                    let mut client = engine_client.clone();
+                    let req = step_request.clone();
+                    async move { client.step(req).await.map(|r| r.into_inner()) }
+                }),
             )
             .await
-            .map_err(|_| anyhow!("Step timed out"))?
-            .map_err(|e| anyhow!("Failed to step environment: {}", e))?;
+            .map_err(|_| anyhow!("Step timed out"))??;
 
-            let step_data = step_response.into_inner();
+            let step_data = step_response;
 
             total_reward += step_data.reward;
             steps_taken += 1;
@@ -373,7 +514,16 @@ impl Actor {
             transitions: transitions.clone(),
         });
 
-        match self.replay_client.clone().store_batch(request).await {
+        // Store batch with retry
+        let config_clone = self.config.clone();
+        let replay_client = self.replay_client.clone();
+        match Self::retry_operation(&config_clone, "store_batch", || {
+            let mut client = replay_client.clone();
+            let req = request.clone();
+            async move { client.store_batch(req).await.map(|r| r.into_inner()) }
+        })
+        .await
+        {
             Ok(_) => {
                 if count >= self.config.batch_size {
                     debug!(
@@ -959,6 +1109,12 @@ mod tests {
                 flush_interval_secs: 1,
                 log_level: "info".into(),
                 metrics_addr: None,
+                connection_retry_max_attempts: 3,
+                connection_retry_initial_interval_ms: 10,
+                connection_retry_max_interval_secs: 1,
+                operation_retry_max_attempts: 2,
+                operation_retry_initial_interval_ms: 10,
+                operation_retry_max_interval_secs: 1,
             },
             engine_client,
             replay_client,
@@ -1049,6 +1205,12 @@ mod tests {
                 flush_interval_secs: 1,
                 log_level: "info".into(),
                 metrics_addr: None,
+                connection_retry_max_attempts: 3,
+                connection_retry_initial_interval_ms: 10,
+                connection_retry_max_interval_secs: 1,
+                operation_retry_max_attempts: 2,
+                operation_retry_initial_interval_ms: 10,
+                operation_retry_max_interval_secs: 1,
             },
             engine_client,
             replay_client,
@@ -1164,6 +1326,12 @@ mod tests {
             flush_interval_secs: 1,
             log_level: "info".into(),
             metrics_addr: None,
+            connection_retry_max_attempts: 3,
+            connection_retry_initial_interval_ms: 10,
+            connection_retry_max_interval_secs: 1,
+            operation_retry_max_attempts: 2,
+            operation_retry_initial_interval_ms: 10,
+            operation_retry_max_interval_secs: 1,
         }
     }
 

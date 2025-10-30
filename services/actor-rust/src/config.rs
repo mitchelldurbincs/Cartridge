@@ -62,6 +62,30 @@ pub struct Config {
     /// Optional Prometheus metrics exporter bind address (e.g. 0.0.0.0:9002)
     #[arg(long, env = "ACTOR_METRICS_ADDR")]
     pub metrics_addr: Option<String>,
+
+    /// Maximum connection retry attempts
+    #[arg(long, env = "ACTOR_CONNECTION_RETRY_MAX_ATTEMPTS", default_value = "10")]
+    pub connection_retry_max_attempts: u32,
+
+    /// Initial connection retry interval in milliseconds
+    #[arg(long, env = "ACTOR_CONNECTION_RETRY_INITIAL_INTERVAL_MS", default_value = "100")]
+    pub connection_retry_initial_interval_ms: u64,
+
+    /// Maximum connection retry interval in seconds
+    #[arg(long, env = "ACTOR_CONNECTION_RETRY_MAX_INTERVAL_SECS", default_value = "30")]
+    pub connection_retry_max_interval_secs: u64,
+
+    /// Maximum operation retry attempts (for reset/step/flush)
+    #[arg(long, env = "ACTOR_OPERATION_RETRY_MAX_ATTEMPTS", default_value = "3")]
+    pub operation_retry_max_attempts: u32,
+
+    /// Initial operation retry interval in milliseconds
+    #[arg(long, env = "ACTOR_OPERATION_RETRY_INITIAL_INTERVAL_MS", default_value = "50")]
+    pub operation_retry_initial_interval_ms: u64,
+
+    /// Maximum operation retry interval in seconds
+    #[arg(long, env = "ACTOR_OPERATION_RETRY_MAX_INTERVAL_SECS", default_value = "5")]
+    pub operation_retry_max_interval_secs: u64,
 }
 
 impl Config {
@@ -98,6 +122,30 @@ impl Config {
                 .map_err(|e| anyhow!("invalid metrics bind address '{}': {}", addr, e))?;
         }
 
+        if self.connection_retry_max_attempts == 0 {
+            return Err(anyhow!("connection_retry_max_attempts must be greater than 0"));
+        }
+
+        if self.connection_retry_initial_interval_ms == 0 {
+            return Err(anyhow!("connection_retry_initial_interval_ms must be greater than 0"));
+        }
+
+        if self.connection_retry_max_interval_secs == 0 {
+            return Err(anyhow!("connection_retry_max_interval_secs must be greater than 0"));
+        }
+
+        if self.operation_retry_max_attempts == 0 {
+            return Err(anyhow!("operation_retry_max_attempts must be greater than 0"));
+        }
+
+        if self.operation_retry_initial_interval_ms == 0 {
+            return Err(anyhow!("operation_retry_initial_interval_ms must be greater than 0"));
+        }
+
+        if self.operation_retry_max_interval_secs == 0 {
+            return Err(anyhow!("operation_retry_max_interval_secs must be greater than 0"));
+        }
+
         Ok(())
     }
 
@@ -107,6 +155,22 @@ impl Config {
 
     pub fn flush_interval(&self) -> Duration {
         Duration::from_secs(self.flush_interval_secs)
+    }
+
+    pub fn connection_retry_initial_interval(&self) -> Duration {
+        Duration::from_millis(self.connection_retry_initial_interval_ms)
+    }
+
+    pub fn connection_retry_max_interval(&self) -> Duration {
+        Duration::from_secs(self.connection_retry_max_interval_secs)
+    }
+
+    pub fn operation_retry_initial_interval(&self) -> Duration {
+        Duration::from_millis(self.operation_retry_initial_interval_ms)
+    }
+
+    pub fn operation_retry_max_interval(&self) -> Duration {
+        Duration::from_secs(self.operation_retry_max_interval_secs)
     }
 }
 
@@ -126,6 +190,12 @@ mod tests {
             flush_interval_secs: 5,
             log_level: "info".into(),
             metrics_addr: None,
+            connection_retry_max_attempts: 10,
+            connection_retry_initial_interval_ms: 100,
+            connection_retry_max_interval_secs: 30,
+            operation_retry_max_attempts: 3,
+            operation_retry_initial_interval_ms: 50,
+            operation_retry_max_interval_secs: 5,
         }
     }
 
